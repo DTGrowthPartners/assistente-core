@@ -66,13 +66,16 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
     from_me = bool(msg.get("from_me", False))
     # whapi marca el origen del outbound:
     #   - "api"   → vino del bot (nosotros)
-    #   - "mobile"/"web" → vino de una asesora humana desde la app
-    source = msg.get("source", "")
+    #   - "mobile"/"web"/"android"/"ios" → vino de una asesora humana desde la app
+    #   - puede venir vacío, None, "unknown", etc. → asumimos bot (defensivo,
+    #     porque marcar como humano dispara una pausa de 4h del bot)
+    source = (msg.get("source") or "").lower()
+    HUMAN_SOURCES = {"mobile", "android", "ios", "web", "desktop", "phone"}
 
     if from_me:
         direccion = "outbound"
-        is_from_bot = source == "api"
-        is_from_human = not is_from_bot
+        is_from_human = source in HUMAN_SOURCES
+        is_from_bot = not is_from_human
     else:
         direccion = "inbound"
         is_from_bot = False
