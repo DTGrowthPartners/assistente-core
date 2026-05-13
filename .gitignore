@@ -1,0 +1,75 @@
+# ── SECRETOS — NUNCA COMMITEAR ─────────────────────────────────────────────
+secrets/
+.env
+.env.local
+.env.production
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+**/credenciales.md
+**/notas_claudevps.md
+**/whapi.md
+
+# ── DATOS SENSIBLES DEL BOT ANTERIOR ───────────────────────────────────────
+# Conversaciones reales con clientes — info personal
+BOT VENTAS/memory/
+# Capturas de pantalla de errores (pueden mostrar números/mensajes)
+BOT VENTAS/errores/
+
+# ── BINARIOS PESADOS (van por CDN o disco del servidor) ────────────────────
+# Catálogo de medios — viven en /home/asistente/data/ del VPS o Shopify CDN
+BOT VENTAS/catalogo/
+BOT VENTAS/mediosdepago/
+BOT VENTAS/ubicaciones/
+BOT VENTAS/pdfs/
+BOT VENTAS/voice_notes_module/
+
+# Por extensión (defensivo si quedan archivos sueltos en otro lado)
+*.mp4
+*.MOV
+*.mov
+*.pdf
+*.xlsm
+*.dump
+*.sqlite
+
+# Excepción: el xlsx de tarifas (lo dejamos como referencia histórica)
+!tarifas_domicilios_cartagena. 1.xlsx
+
+# ── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── Data dumps ─────────────────────────────────────────────────────────────
+shopify_raw.json
+catalogo.html
+productos_html.json
+*.dump
+*.sql.bak
+
+# ── Logs ───────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── IDE ────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ── Sistema ────────────────────────────────────────────────────────────────
+*.tmp

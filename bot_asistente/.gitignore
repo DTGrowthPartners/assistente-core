@@ -1,0 +1,39 @@
+# ── Secrets ────────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.production
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# ── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── Data dumps ─────────────────────────────────────────────────────────────
+shopify_raw.json
+catalogo.html
+*.dump
+*.sql.bak
+
+# ── Logs ───────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── IDE ────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp

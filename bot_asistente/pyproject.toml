@@ -1,0 +1,55 @@
+[project]
+name = "asistente-bot"
+version = "0.1.0"
+description = "Bot Asistente WhatsApp para Innovacion Fashion Outlet"
+requires-python = ">=3.12"
+authors = [{name = "Stiven", email = "dev@dtgrowthpartners.com"}]
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+
+    # DB
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "alembic>=1.13",
+    "psycopg2-binary>=2.9",   # solo para scripts sync de seeds
+
+    # LLM
+    "anthropic>=0.40",
+
+    # HTTP
+    "httpx>=0.27",
+
+    # Parsing
+    "beautifulsoup4>=4.12",
+    "lxml>=5.3",
+
+    # Logs
+    "structlog>=24.4",
+    "python-dotenv>=1.0",
+
+    # Otros
+    "python-multipart>=0.0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "W", "C4", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
