@@ -24,7 +24,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import AlertaFabio, Pedido, ProductoCache, TarifaDomicilio
+from app.db.models import AlertaFabio, Cliente, Pedido, ProductoCache, TarifaDomicilio
 from app.db.repos import registrar_alerta_fabio
 from app.equipo.directorio import config_escalacion, superior_para
 from app.logging_setup import log
@@ -600,10 +600,30 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
         ciudad=args.get("ciudad"),
         barrio=args.get("barrio"),
         metodo_pago=args.get("metodo_pago"),
-        notas=args.get("resumen"),
+        notas=args.get("resumen") or args.get("notas"),
     )
     session.add(pedido)
     await session.flush()
+
+    # Enriquecer datos del cliente: si nombre/ciudad/barrio del cliente están
+    # vacíos, completarlos con lo que dio en el pedido. NO sobreescribimos
+    # valores que ya existen (asumimos que el más viejo es correcto si ya está).
+    cliente_obj = (await session.execute(
+        select(Cliente).where(Cliente.id == cliente_id)
+    )).scalar_one_or_none()
+    if cliente_obj:
+        cambios: dict = {}
+        if not cliente_obj.nombre and args.get("nombre_cliente"):
+            cambios["nombre"] = args["nombre_cliente"]
+        if not cliente_obj.ciudad and args.get("ciudad"):
+            cambios["ciudad"] = args["ciudad"]
+        if not cliente_obj.barrio and args.get("barrio"):
+            cambios["barrio"] = args["barrio"]
+        if cambios:
+            await session.execute(
+                update(Cliente).where(Cliente.id == cliente_id).values(**cambios)
+            )
+            log.info("tools.cliente.enriquecido", cliente_id=cliente_id, cambios=list(cambios.keys()))
 
     # Mensaje detallado para Fabio
     detalle = (
