@@ -179,3 +179,39 @@ class AlertaFabio(Base):
     resuelto: Mapped[bool] = mapped_column(Boolean, default=False)
     resuelto_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EquipoMiembro(Base):
+    """Superior del equipo que recibe escalaciones del bot."""
+    __tablename__ = "equipo_miembros"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nombre: Mapped[str] = mapped_column(String(100))
+    numero_whatsapp: Mapped[str] = mapped_column(String(20), unique=True)
+    rol: Mapped[str | None] = mapped_column(String(50))
+    areas: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    es_fallback: Mapped[bool] = mapped_column(Boolean, default=False)
+    horario_lunes_sabado: Mapped[str | None] = mapped_column(String(30))
+    horario_domingo: Mapped[str | None] = mapped_column(String(30))
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    notas: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __str__(self) -> str:
+        return f"{self.nombre} ({self.numero_whatsapp})"
+
+
+class NumeroInterno(Base):
+    """Número del equipo que el bot ignora silenciosamente."""
+    __tablename__ = "numeros_internos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    numero_whatsapp: Mapped[str] = mapped_column(String(20), unique=True)
+    nombre: Mapped[str | None] = mapped_column(String(100))
+    razon: Mapped[str | None] = mapped_column(Text)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __str__(self) -> str:
+        return f"{self.numero_whatsapp} — {self.nombre or '?'}"

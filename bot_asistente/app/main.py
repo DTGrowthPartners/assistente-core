@@ -8,7 +8,12 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqladmin import Admin
+from starlette.middleware.sessions import SessionMiddleware
 
+from app.admin.auth import AdminAuth
+from app.admin.dashboard import router as dashboard_router
+from app.admin.views import ALL_VIEWS
 from app.config import get_settings
 from app.db.repos import (
     bot_pausado,
@@ -48,6 +53,24 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# ─── Admin panel ────────────────────────────────────────────────────────────
+# Sessions middleware (necesario para SQLAdmin auth)
+app.add_middleware(SessionMiddleware, secret_key=settings.admin_session_secret)
+
+# Dashboard custom (debe registrarse antes de SQLAdmin si comparten path raíz)
+app.include_router(dashboard_router)
+
+# SQLAdmin: CRUD automático sobre todos los modelos
+admin = Admin(
+    app,
+    engine,
+    title="Asistente — Admin",
+    authentication_backend=AdminAuth(secret_key=settings.admin_session_secret),
+    base_url="/admin",
+)
+for view in ALL_VIEWS:
+    admin.add_view(view)
 
 
 # ─── Health checks ──────────────────────────────────────────────────────────

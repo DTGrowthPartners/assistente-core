@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     horario_fin_hora: int = 22                     # 10PM Bogotá
     feature_humanizacion: bool = True              # toggle global
 
+    # ── Admin panel ────────────────────────────────────────────────────────
+    admin_user: str = "admin"
+    admin_password: str = "cambiame_en_env"        # set en .env
+    admin_session_secret: str = "set_un_string_random_de_32_chars"
+
     # ── Paths ───────────────────────────────────────────────────────────────
     data_dir: str = "/home/asistente/data"
     catalogo_dir: str = "/home/asistente/data/catalogo"

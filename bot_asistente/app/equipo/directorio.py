@@ -1,35 +1,42 @@
 """
-Directorio del equipo interno — lee data/equipo.yaml en runtime.
+Directorio del equipo — lee de Postgres (tablas equipo_miembros + numeros_internos).
 
-Permite agregar/quitar superiores y números internos editando el YAML, sin
-tocar código ni reiniciar el servicio.
+Edita desde /admin (UI web) o vía SQL directo.
 
-API:
-    superior_para(area: str) -> Miembro | None
-    es_numero_interno(numero: str) -> bool
-    fabio_phone() -> str
+Cache:
+    Mantiene un cache en memoria con TTL de 30s para no hacer una query a la DB
+    en cada mensaje. Cuando alguien edita un miembro desde /admin, el cache
+    expira automáticamente en máximo 30 segundos.
+
+API sincrónica (los handlers ya viven en contexto async pero esta API se
+expone síncrona porque se llama desde tools/main donde a veces no hay
+session disponible — usa SQLAlchemy sincrónico bajo el capó).
 """
 
 from __future__ import annotations
 
-import os
+import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-import yaml  # type: ignore
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.db.models import EquipoMiembro, NumeroInterno
 from app.logging_setup import log
 
 settings = get_settings()
+
+# Engine sincrónico aparte (no compite con el async del bot)
+_sync_engine = create_engine(settings.database_url_sync, pool_size=2, max_overflow=2, pool_pre_ping=True)
 
 
 @dataclass(frozen=True)
 class Miembro:
     nombre: str
     numero_whatsapp: str
-    rol: str
+    rol: str | None
     areas: tuple[str, ...]
     es_fallback: bool
     activo: bool
@@ -37,66 +44,58 @@ class Miembro:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Cache de archivo con mtime check (no recargamos si no cambió)
+# Cache con TTL
 # ────────────────────────────────────────────────────────────────────────────
 
-_cache: dict[str, Any] = {"mtime": 0, "miembros": [], "numeros_internos": set(), "config": {}}
+CACHE_TTL_SECONDS = 30
+
+_cache: dict[str, Any] = {
+    "loaded_at": 0.0,
+    "miembros": [],
+    "numeros_internos": set(),
+}
 
 
-def _ruta_yaml() -> Path:
-    """Ruta al archivo equipo.yaml. Permite override por env var EQUIPO_YAML."""
-    custom = os.environ.get("EQUIPO_YAML")
-    if custom:
-        return Path(custom)
-    # Default: <data_dir>/equipo.yaml. En VPS: /home/asistente/data/equipo.yaml
-    return Path(settings.data_dir) / "equipo.yaml"
-
-
-def _cargar_si_cambio() -> None:
-    """Recarga el YAML si su mtime cambió desde el último load."""
-    path = _ruta_yaml()
-    if not path.exists():
-        if not _cache["miembros"]:  # primera vez y no existe → log warning
-            log.warning("equipo.yaml_no_existe", path=str(path))
-        return
-
-    mtime = path.stat().st_mtime
-    if mtime <= _cache["mtime"]:
+def _cargar_si_caducado() -> None:
+    """Recarga miembros y números internos si el cache caducó."""
+    ahora = time.time()
+    if ahora - _cache["loaded_at"] < CACHE_TTL_SECONDS:
         return
 
     try:
-        with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+        with Session(_sync_engine) as session:
+            miembros_rows = session.execute(
+                select(EquipoMiembro).where(EquipoMiembro.activo.is_(True))
+            ).scalars().all()
+            internos_rows = session.execute(
+                select(NumeroInterno.numero_whatsapp).where(NumeroInterno.activo.is_(True))
+            ).scalars().all()
     except Exception as e:
-        log.error("equipo.yaml_parse_fail", error=str(e))
+        log.error("equipo.cache.load_fail", error=str(e))
         return
 
-    miembros_raw = data.get("miembros") or []
     miembros: list[Miembro] = []
-    for m in miembros_raw:
-        if not m.get("activo", True):
-            continue
+    for m in miembros_rows:
         miembros.append(Miembro(
-            nombre=m.get("nombre", "?"),
-            numero_whatsapp=m.get("numero_whatsapp", ""),
-            rol=m.get("rol", ""),
-            areas=tuple(m.get("areas") or []),
-            es_fallback=bool(m.get("es_fallback", False)),
-            activo=True,
-            notas=m.get("notas"),
+            nombre=m.nombre,
+            numero_whatsapp=m.numero_whatsapp,
+            rol=m.rol,
+            areas=tuple(m.areas or []),
+            es_fallback=bool(m.es_fallback),
+            activo=bool(m.activo),
+            notas=m.notas,
         ))
 
-    nums_internos: set[str] = set()
-    for entry in (data.get("numeros_internos") or []):
-        num = entry.get("numero")
-        if num:
-            nums_internos.add(num)
-
-    _cache["mtime"] = mtime
+    _cache["loaded_at"] = ahora
     _cache["miembros"] = miembros
-    _cache["numeros_internos"] = nums_internos
-    _cache["config"] = data.get("config") or {}
-    log.info("equipo.recargado", miembros=len(miembros), numeros_internos=len(nums_internos))
+    _cache["numeros_internos"] = set(internos_rows)
+    log.debug("equipo.cache.reloaded",
+              miembros=len(miembros), numeros_internos=len(internos_rows))
+
+
+def invalidar_cache() -> None:
+    """Forzar recarga en la próxima consulta (útil tras edición en admin)."""
+    _cache["loaded_at"] = 0.0
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -105,30 +104,30 @@ def _cargar_si_cambio() -> None:
 
 
 def superior_para(area: str | None = None) -> Miembro | None:
-    """Devuelve el miembro responsable de un área. Cae al fallback si no encaja."""
-    _cargar_si_cambio()
+    """
+    Devuelve el miembro responsable de un área. Cae al fallback si no encaja.
+    Devuelve None solo si no hay miembros activos en DB.
+    """
+    _cargar_si_caducado()
     miembros: list[Miembro] = _cache["miembros"]
     if not miembros:
         return None
 
-    # Match exacto por área
     if area:
         for m in miembros:
             if area in m.areas:
                 return m
 
-    # Fallback
     for m in miembros:
         if m.es_fallback:
             return m
 
-    # Último recurso: primer miembro activo
-    return miembros[0] if miembros else None
+    return miembros[0]
 
 
 def es_numero_interno(numero: str) -> bool:
     """¿Este número pertenece al equipo interno (no es cliente)?"""
-    _cargar_si_cambio()
+    _cargar_si_caducado()
     return numero in _cache["numeros_internos"]
 
 
@@ -139,10 +138,17 @@ def fabio_phone() -> str:
 
 
 def todos_los_miembros() -> list[Miembro]:
-    _cargar_si_cambio()
+    _cargar_si_caducado()
     return list(_cache["miembros"])
 
 
 def config_escalacion() -> dict[str, Any]:
-    _cargar_si_cambio()
-    return dict(_cache["config"])
+    """
+    Devuelve config global de escalación. Hoy hardcoded; en el futuro podría
+    venir de una tabla `config_bot`.
+    """
+    return {
+        "enviar_mensaje_real": True,
+        "prefijo_mensajes_fabio": "[BOT ASISTENTE]",
+        "reescalacion_tras_minutos": 60,
+    }
