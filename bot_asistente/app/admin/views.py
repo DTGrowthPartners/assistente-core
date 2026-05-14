@@ -121,17 +121,34 @@ class PedidoAdmin(ModelView, model=Pedido):
 
     column_list = [
         "id",
-        "cliente_id",
+        "cliente.numero_whatsapp",
+        "cliente.nombre",
         "total",
         "estado",
+        "metodo_pago",
         "ciudad",
         "barrio",
-        "metodo_pago",
         "created_at",
     ]
+    column_labels = {
+        "cliente.numero_whatsapp": "Cliente (número)",
+        "cliente.nombre": "Cliente (nombre)",
+        "metodo_pago": "Método pago",
+        "created_at": "Creado",
+    }
     column_sortable_list = ["id", "created_at", "total", "estado"]
     column_searchable_list = ["ciudad", "barrio"]
     page_size = 50
+
+    # Estados estandarizados: el flujo va de cotizacion → confirmado → despachado
+    # confirmado = Fabio confirmó el pago (no antes)
+    column_descriptions = {
+        "estado": (
+            "Flujo: cotizacion → datos_completos → esperando_pago → "
+            "comprobante_recibido → confirmado (Fabio verificó pago) → "
+            "despachado → entregado | cancelado"
+        ),
+    }
 
 
 class ConversacionAdmin(ModelView, model=Conversacion):
@@ -172,6 +189,10 @@ class AlertaFabioAdmin(ModelView, model=AlertaFabio):
         "resuelto",
         "created_at",
     ]
+    column_labels = {
+        "enviado_a_fabio_en": "Enviada",
+        "created_at": "Creada",
+    }
     column_sortable_list = ["id", "created_at"]
     form_columns = [
         AlertaFabio.tipo,

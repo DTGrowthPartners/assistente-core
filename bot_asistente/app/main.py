@@ -17,6 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.actions import router as actions_router
 from app.admin.auth import AdminAuth
+from app.admin.chats import router as chats_router
 from app.admin.dashboard import router as dashboard_router
 from app.admin.views import ALL_VIEWS
 from app.config import get_settings
@@ -72,9 +73,10 @@ app.mount(
     name="admin_static",
 )
 
-# Dashboard custom + acciones admin (deben registrarse antes de SQLAdmin)
+# Dashboard custom + acciones admin + chats (deben registrarse antes de SQLAdmin)
 app.include_router(dashboard_router)
 app.include_router(actions_router)
+app.include_router(chats_router)
 
 # SQLAdmin: CRUD automático sobre todos los modelos
 admin = Admin(
@@ -96,6 +98,27 @@ _ADMIN_CSS_INJECT = (
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
     '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
     '<link rel="stylesheet" href="/admin-static/custom.css">'
+    # JS: agrega un link "Chats" y "Dashboard" al sidebar de SQLAdmin
+    '<script>'
+    'document.addEventListener("DOMContentLoaded", function() {'
+    '  const sidebar = document.querySelector(".navbar-nav") || document.querySelector(".sidebar-nav");'
+    '  if (!sidebar) return;'
+    '  const items = ['
+    '    { href: "/admin/dashboard", label: "📊 Dashboard", icon: "" },'
+    '    { href: "/admin/chats", label: "💬 Chats", icon: "" }'
+    '  ];'
+    '  items.forEach((it, idx) => {'
+    '    const li = document.createElement("li");'
+    '    li.className = "nav-item";'
+    '    const a = document.createElement("a");'
+    '    a.className = "nav-link";'
+    '    a.href = it.href;'
+    '    a.innerHTML = "<span class=\\"nav-link-title\\">" + it.label + "</span>";'
+    '    li.appendChild(a);'
+    '    sidebar.insertBefore(li, sidebar.firstChild);'
+    '  });'
+    '});'
+    '</script>'
 )
 
 
