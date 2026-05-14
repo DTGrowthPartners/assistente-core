@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqladmin import Admin
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.admin.actions import router as actions_router
 from app.admin.auth import AdminAuth
 from app.admin.dashboard import router as dashboard_router
 from app.admin.views import ALL_VIEWS
@@ -58,8 +62,17 @@ app = FastAPI(
 # Sessions middleware (necesario para SQLAdmin auth)
 app.add_middleware(SessionMiddleware, secret_key=settings.admin_session_secret)
 
-# Dashboard custom (debe registrarse antes de SQLAdmin si comparten path raíz)
+# Static custom para el admin (CSS Tabler-style del diseno.md)
+_admin_dir = Path(__file__).parent / "admin"
+app.mount(
+    "/admin-static",
+    StaticFiles(directory=str(_admin_dir / "static")),
+    name="admin_static",
+)
+
+# Dashboard custom + acciones admin (deben registrarse antes de SQLAdmin)
 app.include_router(dashboard_router)
+app.include_router(actions_router)
 
 # SQLAdmin: CRUD automático sobre todos los modelos
 admin = Admin(
@@ -68,6 +81,7 @@ admin = Admin(
     title="Asistente — Admin",
     authentication_backend=AdminAuth(secret_key=settings.admin_session_secret),
     base_url="/admin",
+    templates_dir=str(_admin_dir / "templates"),
 )
 for view in ALL_VIEWS:
     admin.add_view(view)

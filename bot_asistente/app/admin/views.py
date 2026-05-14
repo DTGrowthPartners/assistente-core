@@ -99,6 +99,19 @@ class ClienteAdmin(ModelView, model=Cliente):
     column_sortable_list = ["id", "ultimo_contacto", "primer_contacto"]
     page_size = 50
 
+    # Permisos explícitos (cascade borra conversaciones + pedidos al eliminar cliente)
+    can_create = True
+    can_edit = True
+    can_delete = True
+    can_view_details = True
+
+    # Tip visible en la vista de detalle:
+    column_descriptions = {
+        "bloqueado": "Si True, el bot no le responde a este número. Para 'resetear' "
+                     "una conversación (borrar mensajes pero mantener cliente) usar "
+                     "POST /admin/actions/cliente/{id}/reset",
+    }
+
 
 class PedidoAdmin(ModelView, model=Pedido):
     name = "Pedido"
