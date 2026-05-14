@@ -1,0 +1,229 @@
+"""
+Flow para mensajes ENTRANTES de miembros del equipo (Fabio, supervisores).
+
+Distinto al flow de cliente:
+- Usa SYSTEM_PROMPT_EQUIPO (rol operativo, no de ventas)
+- Tools distintas (responder_a_cliente, marcar_alerta_resuelta, etc.)
+- NO aplica humanización (no estamos hablando con cliente; el delay no tiene sentido)
+- Carga contexto: últimas alertas abiertas + últimos pedidos
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+from anthropic import AsyncAnthropic
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.claude.prompts import SYSTEM_PROMPT_EQUIPO
+from app.claude.tools_equipo import (
+    HANDLERS_EQUIPO,
+    TOOL_DEFINITIONS_EQUIPO,
+    ejecutar_tool_equipo,
+)
+from app.config import get_settings
+from app.db.models import AlertaFabio, Cliente, Pedido
+from app.equipo.directorio import Miembro
+from app.logging_setup import log
+from app.validators.output_rules import stripear_emojis
+from app.whapi.client import enviar_texto
+from app.whapi.parser import MensajeWhapi
+
+settings = get_settings()
+
+_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+# Costos aproximados (mismos que client.py)
+PRECIO_INPUT = Decimal("3.00") / Decimal("1000000")
+PRECIO_OUTPUT = Decimal("15.00") / Decimal("1000000")
+PRECIO_CACHE_READ = Decimal("0.30") / Decimal("1000000")
+PRECIO_CACHE_WRITE = Decimal("3.75") / Decimal("1000000")
+
+
+async def _construir_contexto(session: AsyncSession, max_alertas: int = 8, dias: int = 3) -> str:
+    """Texto formateado con alertas abiertas + pedidos recientes para Claude."""
+    desde = datetime.now(timezone.utc) - timedelta(days=dias)
+
+    alertas_rows = (await session.execute(
+        select(AlertaFabio, Cliente)
+        .join(Cliente, Cliente.id == AlertaFabio.cliente_id, isouter=True)
+        .where(AlertaFabio.resuelto.is_(False))
+        .order_by(desc(AlertaFabio.created_at))
+        .limit(max_alertas)
+    )).all()
+
+    pedidos_rows = (await session.execute(
+        select(Pedido, Cliente)
+        .join(Cliente, Cliente.id == Pedido.cliente_id)
+        .where(Pedido.created_at >= desde)
+        .order_by(desc(Pedido.created_at))
+        .limit(10)
+    )).all()
+
+    lineas: list[str] = []
+    lineas.append("## ALERTAS ABIERTAS (no resueltas)")
+    if not alertas_rows:
+        lineas.append("(ninguna)")
+    else:
+        for a, c in alertas_rows:
+            cliente_str = (c.nombre or "Cliente sin nombre") if c else "Cliente desconocido"
+            num = c.numero_whatsapp if c else "?"
+            lineas.append(
+                f"- alerta_id={a.id} | tipo={a.tipo} | cliente: {cliente_str} ({num})\n"
+                f"  mensaje: {(a.mensaje or '')[:250]}"
+            )
+
+    lineas.append("\n## PEDIDOS ÚLTIMOS 3 DÍAS")
+    if not pedidos_rows:
+        lineas.append("(ninguno)")
+    else:
+        for p, c in pedidos_rows:
+            lineas.append(
+                f"- pedido_id={p.id} | estado={p.estado} | total=${p.total} | "
+                f"{c.nombre or c.numero_whatsapp} ({c.numero_whatsapp})"
+            )
+
+    return "\n".join(lineas)
+
+
+def _calcular_costo(usage) -> Decimal:
+    if usage is None:
+        return Decimal("0")
+    inp = getattr(usage, "input_tokens", 0) or 0
+    out = getattr(usage, "output_tokens", 0) or 0
+    cr = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cw = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    return (Decimal(inp) * PRECIO_INPUT + Decimal(out) * PRECIO_OUTPUT
+            + Decimal(cr) * PRECIO_CACHE_READ + Decimal(cw) * PRECIO_CACHE_WRITE)
+
+
+async def procesar_mensaje_equipo(
+    *,
+    session: AsyncSession,
+    miembro: Miembro,
+    msg: MensajeWhapi,
+) -> None:
+    """Procesa un inbound de un miembro del equipo y responde con confirmación."""
+    instruccion = (msg.texto or "").strip()
+    if not instruccion:
+        log.info("flow_equipo.sin_texto", miembro=miembro.nombre)
+        return
+
+    log.info("flow_equipo.inbound", miembro=miembro.nombre, preview=instruccion[:100])
+
+    # 1. Construir contexto operativo
+    contexto = await _construir_contexto(session)
+
+    # 2. System prompt + contexto
+    system = [
+        {
+            "type": "text",
+            "text": SYSTEM_PROMPT_EQUIPO,
+            "cache_control": {"type": "ephemeral"},
+        },
+        {
+            "type": "text",
+            "text": f"Miembro hablándote: {miembro.nombre} (rol: {miembro.rol or 'admin'})\n\n"
+                    f"## CONTEXTO ACTUAL\n\n{contexto}",
+        },
+    ]
+
+    messages = [{"role": "user", "content": instruccion}]
+    ctx_tool = {
+        "session": session,
+        "miembro_nombre": miembro.nombre,
+        "miembro_numero": miembro.numero_whatsapp,
+    }
+
+    tokens_in = tokens_out = cache_r = cache_w = 0
+    costo = Decimal("0")
+    tools_usadas: list[str] = []
+
+    # 3. Tool use loop (igual que flow cliente, max 5 rondas)
+    for ronda in range(5):
+        try:
+            resp = await _client.messages.create(
+                model=settings.claude_model_principal,
+                max_tokens=settings.claude_max_tokens_output,
+                system=system,
+                tools=TOOL_DEFINITIONS_EQUIPO,
+                messages=messages,
+            )
+        except Exception as e:
+            log.exception("flow_equipo.claude_fail", error=str(e))
+            try:
+                await enviar_texto(
+                    miembro.numero_whatsapp,
+                    "❌ Tuve un problema técnico procesando tu instrucción. Reintenta en un momento.",
+                )
+            except Exception:
+                pass
+            return
+
+        usage = getattr(resp, "usage", None)
+        tokens_in += getattr(usage, "input_tokens", 0) or 0
+        tokens_out += getattr(usage, "output_tokens", 0) or 0
+        cache_r += getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_w += getattr(usage, "cache_creation_input_tokens", 0) or 0
+        costo += _calcular_costo(usage)
+
+        text_chunks: list[str] = []
+        tool_uses: list[dict] = []
+        for block in resp.content:
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                text_chunks.append(block.text)
+            elif btype == "tool_use":
+                tool_uses.append({"id": block.id, "name": block.name, "input": block.input})
+
+        stop_reason = getattr(resp, "stop_reason", None)
+        if stop_reason != "tool_use" or not tool_uses:
+            texto_final = "\n".join(t.strip() for t in text_chunks if t and t.strip()).strip()
+            if texto_final:
+                # Responder a Fabio con la confirmación (sin humanización — es interno)
+                try:
+                    await enviar_texto(miembro.numero_whatsapp, texto_final)
+                except Exception as e:
+                    log.error("flow_equipo.enviar_confirmacion_fail", error=str(e))
+            log.info(
+                "flow_equipo.respondido",
+                miembro=miembro.nombre,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                cache_read=cache_r,
+                costo_usd=str(costo),
+                tools=tools_usadas,
+            )
+            return
+
+        # Hay tools — ejecutar
+        assistant_content: list[dict] = []
+        for block in resp.content:
+            if getattr(block, "type", None) == "text":
+                assistant_content.append({"type": "text", "text": block.text})
+            elif getattr(block, "type", None) == "tool_use":
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+        messages.append({"role": "assistant", "content": assistant_content})
+
+        tool_results: list[dict] = []
+        import json
+        for tu in tool_uses:
+            log.info("flow_equipo.tool_call", tool=tu["name"], input=tu["input"])
+            tools_usadas.append(tu["name"])
+            result = await ejecutar_tool_equipo(tu["name"], tu["input"], ctx_tool)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tu["id"],
+                "content": json.dumps(result, ensure_ascii=False, default=str),
+            })
+
+        messages.append({"role": "user", "content": tool_results})
+
+    log.warning("flow_equipo.max_loops")

@@ -131,6 +131,22 @@ def es_numero_interno(numero: str) -> bool:
     return numero in _cache["numeros_internos"]
 
 
+def es_miembro_equipo(numero: str) -> Miembro | None:
+    """
+    ¿Este número es un MIEMBRO ACTIVO del equipo (recibe escalaciones, manda
+    instrucciones)? Devuelve el Miembro si sí, None si no.
+
+    Distinto a `es_numero_interno`:
+    - es_numero_interno → asesoras, bodegas, otros bots — el bot las IGNORA
+    - es_miembro_equipo → Fabio, supervisores — el bot HABLA con ellos
+    """
+    _cargar_si_caducado()
+    for m in _cache["miembros"]:
+        if m.numero_whatsapp == numero:
+            return m
+    return None
+
+
 def fabio_phone() -> str:
     """Compatibilidad: devuelve el número del fallback (hoy Fabio)."""
     m = superior_para()

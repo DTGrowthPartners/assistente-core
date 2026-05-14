@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqladmin import Admin
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.actions import router as actions_router
@@ -30,8 +31,9 @@ from app.db.repos import (
     ya_procesado,
 )
 from app.db.session import async_session_factory, engine, get_session
-from app.equipo.directorio import es_numero_interno
+from app.equipo.directorio import es_miembro_equipo, es_numero_interno
 from app.flows.conversation import procesar_mensaje_inbound
+from app.flows.equipo import procesar_mensaje_equipo
 from app.logging_setup import log, setup_logging
 from app.whapi.parser import MensajeWhapi, parsear_payload
 
@@ -81,10 +83,55 @@ admin = Admin(
     title="Asistente — Admin",
     authentication_backend=AdminAuth(secret_key=settings.admin_session_secret),
     base_url="/admin",
-    templates_dir=str(_admin_dir / "templates"),
 )
 for view in ALL_VIEWS:
     admin.add_view(view)
+
+
+# Middleware que inyecta nuestro CSS y fuente Inter en cualquier HTML del admin.
+# Más simple que sobreescribir templates de Jinja (que requiere conocer la
+# herencia interna de SQLAdmin).
+_ADMIN_CSS_INJECT = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
+    '<link rel="stylesheet" href="/admin-static/custom.css">'
+)
+
+
+class AdminCSSInjector(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if not path.startswith("/admin") or path.startswith("/admin-static"):
+            return response
+        ct = response.headers.get("content-type", "")
+        if "text/html" not in ct:
+            return response
+
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        try:
+            text = body.decode("utf-8")
+            text = text.replace("</head>", _ADMIN_CSS_INJECT + "</head>", 1)
+            new_body = text.encode("utf-8")
+        except Exception:
+            new_body = body
+
+        headers = {
+            k: v for k, v in response.headers.items()
+            if k.lower() not in ("content-length", "content-encoding")
+        }
+        return Response(
+            content=new_body,
+            status_code=response.status_code,
+            headers=headers,
+            media_type="text/html",
+        )
+
+
+app.add_middleware(AdminCSSInjector)
 
 
 # ─── Health checks ──────────────────────────────────────────────────────────
@@ -136,7 +183,16 @@ async def webhook(
             continue
         await marcar_procesado(session, msg.id)
 
-        # Bloqueo número interno del equipo (asesoras, otros internos)
+        # ¿Es un MIEMBRO del equipo (Fabio o supervisor)? → flow equipo
+        miembro = es_miembro_equipo(msg.from_number)
+        if miembro:
+            log.info("webhook.inbound_equipo", miembro=miembro.nombre, from_=msg.from_number)
+            resultados.append({"id": msg.id, "status": "team_routed", "miembro": miembro.nombre})
+            # Procesar en background con su propia session
+            asyncio.create_task(_procesar_equipo_async(miembro, msg))
+            continue
+
+        # Número interno NO-miembro (asesoras, bodegas) → ignorar silencioso
         if es_numero_interno(msg.from_number) and msg.from_number != settings.dueno_phone_blocked:
             log.info("webhook.numero_interno_ignorado", from_=msg.from_number)
             resultados.append({"id": msg.id, "status": "internal_team_ignored"})
@@ -244,6 +300,17 @@ async def _procesar_async(cliente_id: int, cliente_numero: str, msg: MensajeWhap
         except Exception:
             await session.rollback()
             log.exception("background.flow_fail", cliente=cliente_numero)
+
+
+async def _procesar_equipo_async(miembro, msg: MensajeWhapi) -> None:
+    """Procesa mensaje de un miembro del equipo (Fabio, supervisor) en background."""
+    async with async_session_factory() as session:
+        try:
+            await procesar_mensaje_equipo(session=session, miembro=miembro, msg=msg)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            log.exception("background.flow_equipo_fail", miembro=miembro.nombre)
 
 
 # ─── Entry point local (dev) ────────────────────────────────────────────────
