@@ -141,20 +141,51 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "tomar_pedido_manual",
         "description": (
-            "Registra un pedido manualmente y escala al equipo para que lo confirme/despache. "
-            "Usar cuando `crear_draft_order` no aplica (producto sin variant_id Shopify, "
-            "API caída, etc.)."
+            "Registra un pedido EN LA TABLA `pedidos` del sistema y escala al equipo. "
+            "DEBES llamarla cuando el cliente CONFIRMA un pedido completo (productos "
+            "elegidos + dirección + método pago) — no esperes al comprobante. "
+            "Pasa los `items` ESTRUCTURADOS con ref/talla/cantidad/precio_unit, y los "
+            "totales calculados como números. Sin esto, el pedido queda sin total y "
+            "no aparece bien en reportes."
         ),
         "input_schema": {
             "type": "object",
-            "required": ["resumen", "nombre_cliente"],
+            "required": ["items", "nombre_cliente", "subtotal", "total"],
             "properties": {
-                "resumen": {"type": "string", "description": "Texto detallado del pedido (refs, tallas, cantidades, total)"},
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Lista de productos del pedido. CADA item debe tener ref+talla+cantidad+precio_unit.",
+                    "items": {
+                        "type": "object",
+                        "required": ["ref", "cantidad", "precio_unit"],
+                        "properties": {
+                            "ref": {"type": "string", "description": "Referencia del producto (INN3684, etc.)"},
+                            "talla": {"type": "string"},
+                            "color": {"type": "string"},
+                            "cantidad": {"type": "integer", "minimum": 1},
+                            "precio_unit": {
+                                "type": "number",
+                                "description": "Precio unitario en COP (NÚMERO sin punto de miles). Ej: 60000 para $60.000",
+                            },
+                        },
+                    },
+                },
                 "nombre_cliente": {"type": "string"},
                 "ciudad": {"type": "string"},
                 "direccion": {"type": "string"},
                 "barrio": {"type": "string"},
-                "metodo_pago": {"type": "string"},
+                "subtotal": {
+                    "type": "number",
+                    "description": "Suma de items (cantidad × precio_unit), SIN domicilio. Número en COP.",
+                },
+                "domicilio": {"type": "number", "description": "Valor del envío en COP. 0 si no aplica (web/contraentrega-nacional)."},
+                "total": {
+                    "type": "number",
+                    "description": "subtotal + domicilio. Número en COP.",
+                },
+                "metodo_pago": {"type": "string", "description": "transferencia_bancolombia, addi, contraentrega_cartagena, etc."},
+                "notas": {"type": "string"},
             },
         },
     },
@@ -513,39 +544,48 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
     cliente_id = ctx.get("cliente_id")
     cliente_numero = ctx.get("cliente_numero")
 
-    # Items: si el modelo los dio estructurados, los usamos; si no, vienen en el resumen
+    # Items estructurados (el tool schema los requiere). Construir lista con
+    # subtotal calculado a partir de cantidad × precio_unit por seguridad.
     items_raw = args.get("items") or []
     items_lista: list[dict] = []
-    subtotal = Decimal("0")
-    if items_raw:
-        for item in items_raw:
-            try:
-                precio_unit = Decimal(str(item.get("precio_unit") or 0))
-                cantidad = int(item.get("cantidad", 1))
-                subtotal += precio_unit * cantidad
-                items_lista.append({
-                    "ref": item.get("ref"),
-                    "talla": item.get("talla"),
-                    "color": item.get("color"),
-                    "cantidad": cantidad,
-                    "precio_unit": str(precio_unit),
-                })
-            except Exception:
-                continue
+    subtotal_calculado = Decimal("0")
+    for item in items_raw:
+        try:
+            precio_unit = Decimal(str(item.get("precio_unit") or 0))
+            cantidad = int(item.get("cantidad", 1))
+            subtotal_calculado += precio_unit * cantidad
+            items_lista.append({
+                "ref": item.get("ref"),
+                "talla": item.get("talla"),
+                "color": item.get("color"),
+                "cantidad": cantidad,
+                "precio_unit": str(precio_unit),
+                "subtotal": str(precio_unit * cantidad),
+            })
+        except Exception as e:
+            log.warning("tomar_pedido.item_invalido", item=item, error=str(e))
 
-    # Si no hay items estructurados, registramos solo el resumen como item textual
-    if not items_lista:
-        items_lista = [{"descripcion": args.get("resumen", "")}]
+    # Fallback defensivo: si Claude por error no pasó items, registrar la nota libre
+    if not items_lista and args.get("notas"):
+        items_lista = [{"descripcion": args.get("notas")}]
 
-    # Domicilio (opcional)
-    try:
-        domicilio = Decimal(str(args.get("domicilio") or 0))
-    except Exception:
-        domicilio = Decimal("0")
+    # Tomar subtotal/domicilio/total que pasó Claude (NÚMEROS); si no vienen, usar
+    # los calculados a partir de items.
+    def _to_decimal(v, default: Decimal = Decimal("0")) -> Decimal:
+        if v is None or v == "":
+            return default
+        try:
+            return Decimal(str(v))
+        except Exception:
+            return default
 
-    try:
-        total = Decimal(str(args.get("total"))) if args.get("total") else subtotal + domicilio
-    except Exception:
+    subtotal = _to_decimal(args.get("subtotal"), subtotal_calculado)
+    domicilio = _to_decimal(args.get("domicilio"), Decimal("0"))
+    total = _to_decimal(args.get("total"), subtotal + domicilio)
+
+    # Si subtotal sigue en 0 pero hubo items, usar lo calculado
+    if subtotal == 0 and subtotal_calculado > 0:
+        subtotal = subtotal_calculado
         total = subtotal + domicilio
 
     # Insertar en pedidos
