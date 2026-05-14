@@ -17,15 +17,19 @@ import unicodedata
 from decimal import Decimal
 from typing import Any, Awaitable, Callable
 
-from sqlalchemy import or_, select
+from datetime import datetime, timezone
+from decimal import Decimal
+
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import ProductoCache, TarifaDomicilio
+from app.db.models import AlertaFabio, Pedido, ProductoCache, TarifaDomicilio
 from app.db.repos import registrar_alerta_fabio
+from app.equipo.directorio import config_escalacion, superior_para
 from app.logging_setup import log
 from app.shopify.client import ShopifyError, crear_draft_order as shopify_crear_draft
-from app.whapi.client import enviar_archivo_local, enviar_imagen_url
+from app.whapi.client import enviar_archivo_local, enviar_imagen_url, enviar_texto
 
 settings = get_settings()
 
@@ -48,8 +52,9 @@ TOOL_DEFINITIONS: list[dict] = [
                 "categoria": {
                     "type": "string",
                     "enum": ["shorts", "bermudas", "jeans", "pantalones", "faldas",
-                             "bragas", "vestidos", "sets", "tops", "camisetas",
-                             "blusas", "chalecos"],
+                             "bragas", "vestidos", "sets", "tops", "camisas",
+                             "camisetas", "blusas", "body", "sueteres", "chalecos"],
+                    "description": "camisas = formal/manga larga; camisetas = crop top, t-shirt informal",
                 },
                 "ref": {"type": "string", "description": "Referencia exacta tipo INN3684"},
                 "talla": {"type": "string"},
@@ -157,9 +162,8 @@ TOOL_DEFINITIONS: list[dict] = [
         "name": "escalar_a_equipo",
         "description": (
             "Notifica al equipo interno sobre algo que requiere intervención humana. "
-            "NUNCA menciones nombres del equipo al cliente. Casos: comprobante de pago, "
-            "ref desconocida, queja seria, duda mayorista específica, dirección de tienda "
-            "que no conoces."
+            "NUNCA menciones nombres del equipo al cliente. El bot decide a qué persona "
+            "del equipo enviar según el `area` (telas, envíos, mayorista, etc.)."
         ),
         "input_schema": {
             "type": "object",
@@ -168,7 +172,15 @@ TOOL_DEFINITIONS: list[dict] = [
                 "tipo": {
                     "type": "string",
                     "enum": ["comprobante_pago", "ref_desconocida", "queja",
-                             "pedido_confirmado", "duda_mayorista", "otro"],
+                             "pedido_confirmado", "duda_mayorista", "duda_tela_calidad",
+                             "duda_envio", "duda_tecnica", "otro"],
+                },
+                "area": {
+                    "type": "string",
+                    "description": "Área temática para enrutar al superior correcto. Si dudas, omite.",
+                    "enum": ["pagos", "pedidos", "telas_calidad", "mayorista",
+                             "envios_nacionales", "tienda_fisica", "quejas",
+                             "tecnico", "otro"],
                 },
                 "mensaje": {"type": "string", "description": "Resumen interno para el equipo (no va al cliente)"},
                 "media_url": {"type": "string", "description": "URL del comprobante u otra evidencia si aplica"},
@@ -312,6 +324,20 @@ async def handler_enviar_imagen_producto(args: dict, ctx: dict) -> dict:
     session: AsyncSession = ctx["session"]
     ref = args["ref"].upper()
 
+    # Dedupe: no re-enviar fotos que ya mandamos en esta sesión
+    productos_mostrados = set(ctx.get("productos_mostrados", []) or [])
+    if ref in productos_mostrados and not args.get("forzar", False):
+        log.info("tools.enviar_imagen.skip_duplicado", ref=ref)
+        return {
+            "enviado": False,
+            "razon": "ya_mostrada_antes",
+            "nota_para_modelo": (
+                f"La foto del producto {ref} ya fue enviada al cliente antes en esta "
+                "conversación. NO la vuelvas a mandar — el cliente ya la tiene. "
+                "Responde refiriéndote a 'el jean que te mostré' o el nombre del producto."
+            ),
+        }
+
     stmt = select(ProductoCache).where(ProductoCache.ref == ref)
     prod = (await session.execute(stmt)).scalar_one_or_none()
     if not prod:
@@ -334,6 +360,9 @@ async def handler_enviar_imagen_producto(args: dict, ctx: dict) -> dict:
         log.error("tools.enviar_imagen.fail", ref=ref, error=str(e))
         return {"enviado": False, "razon": f"Error de red al enviar: {e}"}
 
+    # Registrar como mostrada (set mutado por referencia para el resto del turno)
+    productos_mostrados.add(ref)
+    ctx["productos_mostrados"] = list(productos_mostrados)
     return {"enviado": True, "ref": ref, "caption": caption}
 
 
@@ -348,11 +377,41 @@ async def handler_enviar_imagen_banco(args: dict, ctx: dict) -> dict:
         "colpatria": "colpatria.webp",
         "banco_de_bogota": "banco de bogota.webp",
     }
+    # Datos textuales como fallback (cuando la imagen no carga)
+    DATOS_BANCO = {
+        "bancolombia": {
+            "banco": "Bancolombia", "tipo": "Ahorros",
+            "numero": "08500002185", "titular": "Comercializadora Marcas y Estilos",
+            "nit": "900425072",
+        },
+        "davivienda": {
+            "banco": "Davivienda", "tipo": "Ahorros",
+            "numero": "036001083900", "titular": "Luis Tirado", "cc": "9098444",
+        },
+        "bbva": {
+            "banco": "BBVA", "tipo": "Corriente",
+            "numero": "835003732", "titular": "Comercializadora Marcas y Estilos",
+            "nit": "900425072",
+        },
+        "colpatria": {
+            "banco": "Colpatria", "tipo": "Corriente",
+            "numero": "4251012380", "titular": "Comercializadora Marcas y Estilos",
+            "nit": "900425072",
+        },
+        "banco_de_bogota": {
+            "banco": "Banco de Bogotá", "tipo": "Corriente",
+            "numero": "182298868", "titular": "Comercializadora Marcas y Estilos",
+            "nit": "900425072",
+        },
+    }
     archivo = paths.get(banco)
-    if not archivo:
+    datos = DATOS_BANCO.get(banco)
+    if not archivo or not datos:
         return {"enviado": False, "razon": f"Banco {banco} no reconocido"}
 
     full_path = f"{settings.bancos_dir}/{archivo}"
+
+    # Intentar enviar la imagen del banco
     try:
         await enviar_archivo_local(
             cliente_numero,
@@ -360,11 +419,26 @@ async def handler_enviar_imagen_banco(args: dict, ctx: dict) -> dict:
             tipo="image",
             caption="Datos para transferencia. Cuando hagas el pago, envíame foto del comprobante.",
         )
+        return {"enviado": True, "banco": banco, "via": "imagen"}
+    except FileNotFoundError:
+        log.warning("tools.enviar_imagen_banco.no_archivo", banco=banco, path=full_path)
     except Exception as e:
         log.error("tools.enviar_imagen_banco.fail", banco=banco, error=str(e))
-        return {"enviado": False, "razon": f"Error: {e}"}
 
-    return {"enviado": True, "banco": banco}
+    # Fallback: devolver los datos al modelo para que los incluya en su respuesta texto.
+    # NOTA AL MODELO: no menciones "hubo un inconveniente". Simplemente da los datos
+    # con tono natural ("acá te paso los datos para la transferencia: ...").
+    return {
+        "enviado": False,
+        "via": "texto_fallback",
+        "datos": datos,
+        "instruccion_modelo": (
+            "Imagen no disponible. Da los datos bancarios en texto normal, sin mencionar "
+            "que hubo problemas. Formato sugerido: 'Acá te paso los datos para la transferencia: "
+            f"Banco: {datos['banco']}, Cuenta {datos['tipo']}: {datos['numero']}, "
+            f"Titular: {datos['titular']}. Cuando hagas el pago, envíame foto del comprobante.'"
+        ),
+    }
 
 
 async def handler_crear_draft_order(args: dict, ctx: dict) -> dict:
@@ -429,35 +503,177 @@ async def handler_crear_draft_order(args: dict, ctx: dict) -> dict:
 
 
 async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
-    """Registra el pedido en alertas_fabio y devuelve OK."""
+    """
+    Registra el pedido:
+      - Inserta en tabla `pedidos` con datos completos
+      - Crea alerta para Fabio
+      - Envía mensaje real a Fabio (vía whapi)
+    """
     session: AsyncSession = ctx["session"]
     cliente_id = ctx.get("cliente_id")
+    cliente_numero = ctx.get("cliente_numero")
+
+    # Items: si el modelo los dio estructurados, los usamos; si no, vienen en el resumen
+    items_raw = args.get("items") or []
+    items_lista: list[dict] = []
+    subtotal = Decimal("0")
+    if items_raw:
+        for item in items_raw:
+            try:
+                precio_unit = Decimal(str(item.get("precio_unit") or 0))
+                cantidad = int(item.get("cantidad", 1))
+                subtotal += precio_unit * cantidad
+                items_lista.append({
+                    "ref": item.get("ref"),
+                    "talla": item.get("talla"),
+                    "color": item.get("color"),
+                    "cantidad": cantidad,
+                    "precio_unit": str(precio_unit),
+                })
+            except Exception:
+                continue
+
+    # Si no hay items estructurados, registramos solo el resumen como item textual
+    if not items_lista:
+        items_lista = [{"descripcion": args.get("resumen", "")}]
+
+    # Domicilio (opcional)
+    try:
+        domicilio = Decimal(str(args.get("domicilio") or 0))
+    except Exception:
+        domicilio = Decimal("0")
+
+    try:
+        total = Decimal(str(args.get("total"))) if args.get("total") else subtotal + domicilio
+    except Exception:
+        total = subtotal + domicilio
+
+    # Insertar en pedidos
+    pedido = Pedido(
+        cliente_id=cliente_id,
+        items=items_lista,
+        subtotal=subtotal,
+        domicilio=domicilio,
+        total=total,
+        estado="datos_completos",
+        direccion_envio=args.get("direccion"),
+        ciudad=args.get("ciudad"),
+        barrio=args.get("barrio"),
+        metodo_pago=args.get("metodo_pago"),
+        notas=args.get("resumen"),
+    )
+    session.add(pedido)
+    await session.flush()
+
+    # Mensaje detallado para Fabio
     detalle = (
-        f"📦 PEDIDO MANUAL\n"
-        f"Cliente: {args['nombre_cliente']}\n"
+        f"PEDIDO NUEVO #{pedido.id}\n"
+        f"Cliente: {args['nombre_cliente']} ({cliente_numero})\n"
         f"Ciudad: {args.get('ciudad', 'N/A')}\n"
         f"Barrio: {args.get('barrio', 'N/A')}\n"
         f"Dirección: {args.get('direccion', 'N/A')}\n"
-        f"Pago: {args.get('metodo_pago', 'N/A')}\n\n"
-        f"Detalle:\n{args['resumen']}"
+        f"Pago: {args.get('metodo_pago', 'N/A')}\n"
+        f"Subtotal: ${subtotal:,.0f}\n".replace(",", ".") +
+        f"Domicilio: ${domicilio:,.0f}\n".replace(",", ".") +
+        f"Total: ${total:,.0f}\n\n".replace(",", ".") +
+        f"Detalle:\n{args.get('resumen', '')}"
     )
-    await registrar_alerta_fabio(
+
+    # Crear alerta + enviar mensaje a Fabio
+    alerta = await registrar_alerta_fabio(
         session, tipo="pedido_confirmado", mensaje=detalle, cliente_id=cliente_id
     )
-    return {"registrado": True, "info_cliente": "El equipo coordinará el despacho contigo en breve"}
+    enviado_ok = await _enviar_alerta_a_fabio(alerta, detalle, session)
+
+    return {
+        "registrado": True,
+        "pedido_id": pedido.id,
+        "total": str(total),
+        "fabio_notificado": enviado_ok,
+        "info_cliente": "El equipo coordinará el despacho contigo en breve",
+    }
+
+
+async def _enviar_alerta_a_fabio(alerta: AlertaFabio, mensaje: str, session: AsyncSession) -> bool:
+    """
+    Envía a Fabio (fallback). Wrapper sobre _enviar_alerta_a_superior usando
+    el directorio del equipo. Mantenemos el nombre por compatibilidad.
+    """
+    superior = superior_para("pedidos")  # pedidos = área típica de Fabio
+    destino = superior.numero_whatsapp if superior else settings.fabio_phone
+    return await _enviar_alerta_a_superior(alerta, mensaje, session, destino)
 
 
 async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
+    """
+    Crea alerta en DB Y envía mensaje real al superior correcto vía whapi.
+
+    Enrutamiento: usa `area` para encontrar el responsable en data/equipo.yaml.
+    Si no hay área o el área no tiene responsable específico, cae al fallback
+    (hoy: Fabio).
+    """
     session: AsyncSession = ctx["session"]
     cliente_id = ctx.get("cliente_id")
-    await registrar_alerta_fabio(
+    cliente_numero = ctx.get("cliente_numero") or "(número desconocido)"
+    area = args.get("area")
+
+    superior = superior_para(area)
+    cfg = config_escalacion()
+    prefijo = cfg.get("prefijo_mensajes_fabio", "[BOT ASISTENTE]")
+    enviar_real = cfg.get("enviar_mensaje_real", True)
+
+    alerta = await registrar_alerta_fabio(
         session,
         tipo=args["tipo"],
         mensaje=args["mensaje"],
         cliente_id=cliente_id,
         media_url=args.get("media_url"),
     )
-    return {"escalado": True, "tipo": args["tipo"]}
+
+    if not superior:
+        log.error("tools.escalar.sin_superior", area=area)
+        return {"escalado": False, "razon": "no hay miembro del equipo configurado"}
+
+    mensaje = (
+        f"{prefijo} [{args['tipo']}]"
+        + (f" ({area})" if area else "")
+        + f"\nCliente: {cliente_numero}\n\n"
+        + args['mensaje']
+    )
+    if args.get("media_url"):
+        mensaje += f"\n\nMedia: {args['media_url']}"
+
+    enviado = False
+    if enviar_real:
+        enviado = await _enviar_alerta_a_superior(alerta, mensaje, session, superior.numero_whatsapp)
+
+    return {
+        "escalado": True,
+        "tipo": args["tipo"],
+        "area": area,
+        "responsable": superior.nombre,
+        "notificado_whatsapp": enviado,
+    }
+
+
+async def _enviar_alerta_a_superior(
+    alerta: AlertaFabio,
+    mensaje: str,
+    session: AsyncSession,
+    numero_destino: str,
+) -> bool:
+    """Envía mensaje real al superior correspondiente vía whapi."""
+    try:
+        await enviar_texto(numero_destino, mensaje)
+        await session.execute(
+            update(AlertaFabio)
+            .where(AlertaFabio.id == alerta.id)
+            .values(enviado_a_fabio_en=datetime.now(timezone.utc))
+        )
+        return True
+    except Exception as e:
+        log.error("tools.alerta.envio_fail", error=str(e), destino=numero_destino)
+        return False
 
 
 async def handler_programar_seguimiento(args: dict, ctx: dict) -> dict:

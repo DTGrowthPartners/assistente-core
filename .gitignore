@@ -25,6 +25,11 @@ BOT VENTAS/ubicaciones/
 BOT VENTAS/pdfs/
 BOT VENTAS/voice_notes_module/
 
+# Carpetas de assets en raíz que el usuario maneja localmente
+/mediosdepago/
+/catalogo/
+/ubicaciones/
+
 # Por extensión (defensivo si quedan archivos sueltos en otro lado)
 *.mp4
 *.MOV

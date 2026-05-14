@@ -12,11 +12,17 @@ Recibe un MensajeWhapi inbound + sesión DB y produce la respuesta:
 
 from __future__ import annotations
 
+import base64
+from datetime import datetime, timedelta, timezone
+
+import httpx
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.claude.client import RespuestaClaude, conversar
 from app.claude.intent import clasificar
 from app.config import get_settings
+from app.db.models import Sesion
 from app.db.repos import (
     get_or_create_sesion,
     guardar_conversacion,
@@ -34,7 +40,7 @@ from app.validators.output_rules import (
     stripear_emojis,
     validar,
 )
-from app.whapi.client import enviar_paused, enviar_texto, enviar_typing
+from app.whapi.client import auth_headers, enviar_paused, enviar_texto, enviar_typing
 from app.whapi.parser import MensajeWhapi
 
 settings = get_settings()
@@ -59,7 +65,7 @@ async def procesar_mensaje_inbound(
         return
 
     # 1. Sesión + historial
-    await get_or_create_sesion(session, cliente_id)
+    sesion = await get_or_create_sesion(session, cliente_id)
     historial_db = await ultimos_mensajes(session, cliente_id, n=10)
 
     historial_claude: list[dict] = []
@@ -79,18 +85,66 @@ async def procesar_mensaje_inbound(
         log.info("flow.spam_ignorado", cliente=cliente_numero)
         return
 
-    # 3. Llamar a Claude con tools
+    # 3. Si el cliente envió imagen, descargarla para pasarla a Claude (multimodal)
+    imagen_b64: str | None = None
+    imagen_mime: str | None = None
+    if msg.tipo in ("imagen",) and msg.media_url:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(msg.media_url, headers=auth_headers())
+                if r.status_code < 400:
+                    raw = r.content
+                    if len(raw) <= 5 * 1024 * 1024:  # max 5MB
+                        imagen_b64 = base64.b64encode(raw).decode("ascii")
+                        imagen_mime = msg.media_mime or "image/jpeg"
+                        log.info("flow.imagen.descargada",
+                                 cliente=cliente_numero, bytes=len(raw), mime=imagen_mime)
+                    else:
+                        log.warning("flow.imagen.muy_grande", bytes=len(raw))
+        except Exception as e:
+            log.warning("flow.imagen.fail_download", error=str(e))
+
+    # 4. Llamar a Claude con tools (incluye productos ya mostrados para dedupe)
+    # Si el cliente estuvo inactivo >30 min, resetar productos_mostrados:
+    # asumir nueva conversación, permitir re-enviar fotos.
+    productos_mostrados_efectivos: list[str] = list(sesion.productos_mostrados or [])
+    if sesion.ultima_interaccion:
+        ahora = datetime.now(timezone.utc)
+        # ultima_interaccion puede venir como naive o aware; normalizamos
+        ultima = sesion.ultima_interaccion
+        if ultima.tzinfo is None:
+            ultima = ultima.replace(tzinfo=timezone.utc)
+        if ahora - ultima > timedelta(minutes=30):
+            log.info(
+                "flow.sesion_reset_dedupe",
+                cliente=cliente_numero,
+                minutos_inactivo=int((ahora - ultima).total_seconds() / 60),
+            )
+            productos_mostrados_efectivos = []
+
     ctx = {
         "session": session,
         "cliente_id": cliente_id,
         "cliente_numero": cliente_numero,
         "intent": intent,
+        "productos_mostrados": productos_mostrados_efectivos,
     }
     respuesta = await conversar(
         historial=historial_claude,
         mensaje_usuario=contenido_usuario,
         ctx=ctx,
+        imagen_base64=imagen_b64,
+        imagen_mime=imagen_mime,
     )
+
+    # 4.1. Persistir productos mostrados en la sesión (para próximos turnos)
+    nuevos_mostrados = ctx.get("productos_mostrados", [])
+    if nuevos_mostrados:
+        await session.execute(
+            update(Sesion)
+            .where(Sesion.cliente_id == cliente_id)
+            .values(productos_mostrados=nuevos_mostrados)
+        )
 
     # 4. Validar — si falla, reintentamos 1 vez
     texto_final = await _validar_y_reescribir_si_necesario(

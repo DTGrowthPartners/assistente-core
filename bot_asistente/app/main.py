@@ -21,6 +21,7 @@ from app.db.repos import (
     ya_procesado,
 )
 from app.db.session import async_session_factory, engine, get_session
+from app.equipo.directorio import es_numero_interno
 from app.flows.conversation import procesar_mensaje_inbound
 from app.logging_setup import log, setup_logging
 from app.whapi.parser import MensajeWhapi, parsear_payload
@@ -98,7 +99,13 @@ async def webhook(
             continue
         await marcar_procesado(session, msg.id)
 
-        # Bloqueo del número del dueño
+        # Bloqueo número interno del equipo (asesoras, otros internos)
+        if es_numero_interno(msg.from_number) and msg.from_number != settings.dueno_phone_blocked:
+            log.info("webhook.numero_interno_ignorado", from_=msg.from_number)
+            resultados.append({"id": msg.id, "status": "internal_team_ignored"})
+            continue
+
+        # Bloqueo del número del dueño (alerta a Fabio)
         if msg.from_number == settings.dueno_phone_blocked:
             log.warning("webhook.numero_bloqueado", from_=msg.from_number)
             await registrar_alerta_fabio(

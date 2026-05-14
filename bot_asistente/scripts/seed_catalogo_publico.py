@@ -65,7 +65,14 @@ class Producto:
 # ─────────────────────────────────────────────────────────────────────────────
 
 CATEGORIA_RULES = [
-    ("shorts", r"\bshort\b|short\s"),
+    # Orden importa: las reglas más específicas primero.
+    # camisetas ANTES de camisas (para evitar que "camisa" matchee "camiseta").
+    ("camisetas", r"\bcamiseta|\bcrop top|\bt-shirt"),
+    ("camisas", r"\bcamisa(?!ta)"),   # "camisa" pero NO "camiseta"
+    ("blusas", r"\bblusa"),
+    ("body", r"\bbody\b"),
+    ("sueteres", r"\bsu[eé]ter|\bsweater"),
+    ("shorts", r"\bshort"),
     ("bermudas", r"\bbermuda|\bbiker|\bciclista"),
     ("jeans", r"\bjean\b|\bskinny|\bbota recta|\bwide leg|\bsemiflare|\bculotte"),
     ("pantalones", r"\bpantal[oó]n|\bchambray|\bcargo|\bdrill"),
@@ -74,20 +81,34 @@ CATEGORIA_RULES = [
     ("vestidos", r"\bvestido"),
     ("sets", r"\bset\b|\bconjunto"),
     ("tops", r"\btop\b"),
-    ("camisetas", r"\bcamiseta|\bcamisa\b|\bbody|\bsu[eé]ter"),
-    ("blusas", r"\bblusa"),
     ("chalecos", r"\bchaleco"),
 ]
 
 
 def detectar_categoria(p: dict) -> str | None:
+    """
+    Detecta categoría con cascada en orden de confianza:
+    1. title (más confiable, las palabras describen lo que es)
+    2. product_type (de Shopify Admin, suele estar bien)
+    3. tags (ruidoso — ej. tag "amour" matchea con cosas raras)
+    """
     nombre = p.get("title", "").lower()
-    tipo = (p.get("product_type") or "").lower()
-    tags = " ".join(t.lower() for t in (p.get("tags") or []))
-    texto = f"{nombre} {tipo} {tags}"
     for cat, patron in CATEGORIA_RULES:
-        if re.search(patron, texto):
+        if re.search(patron, nombre):
             return cat
+
+    tipo = (p.get("product_type") or "").lower()
+    if tipo:
+        for cat, patron in CATEGORIA_RULES:
+            if re.search(patron, tipo):
+                return cat
+
+    # Tags como último recurso (ruidoso)
+    tags = " ".join((t or "").lower() for t in (p.get("tags") or []))
+    if tags:
+        for cat, patron in CATEGORIA_RULES:
+            if re.search(patron, tags):
+                return cat
     return None
 
 

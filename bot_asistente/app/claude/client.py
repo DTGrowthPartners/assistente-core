@@ -66,18 +66,43 @@ async def conversar(
     mensaje_usuario: str,
     ctx: dict,
     max_loops: int = 5,
+    imagen_base64: str | None = None,
+    imagen_mime: str | None = None,
 ) -> RespuestaClaude:
     """
     Conversación con Claude usando tool use loop.
 
     `historial`: lista de mensajes previos en formato Anthropic
-        [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
-
-    `mensaje_usuario`: el último mensaje a procesar.
-
+    `mensaje_usuario`: el último texto del cliente
+    `imagen_base64` (opcional): si el cliente envió una imagen, se la pasamos a Claude
+        como content block multimodal. Permite al bot "ver" la foto.
+    `imagen_mime`: tipo MIME de la imagen (image/jpeg, image/png, image/webp)
     `ctx`: contexto que se pasa a los handlers de tools (session DB, cliente, etc).
     """
-    messages = list(historial) + [{"role": "user", "content": mensaje_usuario}]
+    # Construir el último user message — puede tener imagen + texto
+    if imagen_base64:
+        last_msg_content: list[dict] | str = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": imagen_mime or "image/jpeg",
+                    "data": imagen_base64,
+                },
+            },
+            {
+                "type": "text",
+                "text": (
+                    f"(Imagen enviada por el cliente. Mira la foto para entender qué producto/comprobante muestra.)\n\n"
+                    f"Texto del cliente: {mensaje_usuario}" if mensaje_usuario.strip()
+                    else "Texto del cliente: (sin texto, solo imagen)"
+                ),
+            },
+        ]
+    else:
+        last_msg_content = mensaje_usuario
+
+    messages = list(historial) + [{"role": "user", "content": last_msg_content}]
     system = construir_system_prompt()
     tools_usadas: list[str] = []
     respuesta = RespuestaClaude(texto="", modelo=settings.claude_model_principal)

@@ -17,6 +17,11 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {settings.whapi_token}"}
 
 
+def auth_headers() -> dict[str, str]:
+    """Versión pública del header de auth para uso desde otros módulos."""
+    return _headers()
+
+
 def _to_e164(numero: str) -> str:
     """De '+573026041584' a '573026041584' (whapi acepta ambos pero prefiere sin +)."""
     return numero.lstrip("+")

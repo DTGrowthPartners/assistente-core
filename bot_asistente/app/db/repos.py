@@ -144,11 +144,23 @@ async def ultimos_mensajes(
     session: AsyncSession,
     cliente_id: int,
     n: int = 10,
+    horas_max: int = 4,
 ) -> list[Conversacion]:
-    """Últimos N mensajes del cliente, ordenados cronológicamente."""
+    """
+    Últimos N mensajes del cliente DE LAS ÚLTIMAS `horas_max` HORAS,
+    ordenados cronológicamente.
+
+    Por qué el límite temporal: si el cliente vuelve después de horas/días con
+    un simple "Hola", el modelo puede asumir contexto viejo (precios cotizados,
+    productos discutidos, supuestos cierres) y alucinar respuestas incorrectas
+    como confirmar pedidos que nunca se hicieron. Mejor empezar conversación
+    fresca.
+    """
+    desde = datetime.now(timezone.utc) - timedelta(hours=horas_max)
     stmt = (
         select(Conversacion)
         .where(Conversacion.cliente_id == cliente_id)
+        .where(Conversacion.timestamp > desde)
         .order_by(Conversacion.timestamp.desc())
         .limit(n)
     )
