@@ -67,13 +67,19 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
     # whapi marca el origen del outbound:
     #   - "api"   → vino del bot (nosotros)
     #   - "mobile"/"web"/"android"/"ios" → vino de una asesora humana desde la app
-    #   - puede venir vacío, None, "unknown", etc. → asumimos bot (defensivo,
-    #     porque marcar como humano dispara una pausa de 4h del bot)
+    #   - puede venir vacío, None, "unknown", etc. → asumimos BOT (defensivo)
+    #
+    # OJO: si from_me=True y NO podemos confirmar que fue humano, ASUMIR BOT.
+    # Marcar como humano dispara una pausa de 4h. Marcar como bot solo causa
+    # que se ignore. Es preferible el segundo (más seguro).
     source = (msg.get("source") or "").lower()
     HUMAN_SOURCES = {"mobile", "android", "ios", "web", "desktop", "phone"}
 
     if from_me:
         direccion = "outbound"
+        # Solo es humano si source DICE EXPLÍCITAMENTE que viene de un cliente
+        # de WhatsApp (mobile/android/ios/web/desktop). Cualquier otro caso
+        # (api, vacío, unknown, etc.) → bot.
         is_from_human = source in HUMAN_SOURCES
         is_from_bot = not is_from_human
     else:

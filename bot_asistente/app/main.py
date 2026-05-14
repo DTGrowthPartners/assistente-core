@@ -183,6 +183,16 @@ async def webhook(
             continue
         await marcar_procesado(session, msg.id)
 
+        # 🚨 PRIORIDAD 1 — Outbound del PROPIO BOT (eco retransmitido por whapi).
+        # Este check va ANTES de todo lo demás para evitar loops infinitos:
+        # cuando el bot le responde a un miembro del equipo, whapi retransmite
+        # ese outbound al webhook. Sin este check, el bot procesaría su propio
+        # mensaje como nuevo inbound del equipo → respondería → loop.
+        if msg.is_from_bot:
+            log.debug("webhook.own_outbound_ignored", msg_id=msg.id)
+            resultados.append({"id": msg.id, "status": "own_outbound_ignored"})
+            continue
+
         # ¿Es un MIEMBRO del equipo (Fabio o supervisor)? → flow equipo
         miembro = es_miembro_equipo(msg.from_number)
         if miembro:
