@@ -17,6 +17,10 @@ from app.db.models import (
     TarifaDomicilio,
 )
 
+# Nota técnica: SQLAdmin requiere `column_filters` como list[str] con el
+# nombre del atributo, NO como columnas SQLAlchemy. Lo mismo para
+# `column_sortable_list` y `column_default_sort` cuando se pasa al constructor.
+
 
 # ─── EQUIPO ────────────────────────────────────────────────────────────────
 
@@ -28,16 +32,15 @@ class EquipoMiembroAdmin(ModelView, model=EquipoMiembro):
     category = "Configuración"
 
     column_list = [
-        EquipoMiembro.nombre,
-        EquipoMiembro.numero_whatsapp,
-        EquipoMiembro.rol,
-        EquipoMiembro.areas,
-        EquipoMiembro.es_fallback,
-        EquipoMiembro.activo,
+        "nombre",
+        "numero_whatsapp",
+        "rol",
+        "areas",
+        "es_fallback",
+        "activo",
     ]
-    column_searchable_list = [EquipoMiembro.nombre, EquipoMiembro.numero_whatsapp]
-    column_sortable_list = [EquipoMiembro.id, EquipoMiembro.nombre, EquipoMiembro.activo]
-    column_default_sort = [(EquipoMiembro.es_fallback, True), (EquipoMiembro.nombre, False)]
+    column_searchable_list = ["nombre", "numero_whatsapp"]
+    column_sortable_list = ["id", "nombre", "activo"]
     form_columns = [
         EquipoMiembro.nombre,
         EquipoMiembro.numero_whatsapp,
@@ -58,13 +61,13 @@ class NumeroInternoAdmin(ModelView, model=NumeroInterno):
     category = "Configuración"
 
     column_list = [
-        NumeroInterno.numero_whatsapp,
-        NumeroInterno.nombre,
-        NumeroInterno.razon,
-        NumeroInterno.activo,
+        "numero_whatsapp",
+        "nombre",
+        "razon",
+        "activo",
     ]
-    column_searchable_list = [NumeroInterno.numero_whatsapp, NumeroInterno.nombre]
-    column_sortable_list = [NumeroInterno.id, NumeroInterno.numero_whatsapp]
+    column_searchable_list = ["numero_whatsapp", "nombre"]
+    column_sortable_list = ["id", "numero_whatsapp"]
     form_columns = [
         NumeroInterno.numero_whatsapp,
         NumeroInterno.nombre,
@@ -83,20 +86,17 @@ class ClienteAdmin(ModelView, model=Cliente):
     category = "Operación"
 
     column_list = [
-        Cliente.id,
-        Cliente.numero_whatsapp,
-        Cliente.nombre,
-        Cliente.ciudad,
-        Cliente.barrio,
-        Cliente.es_mayorista,
-        Cliente.bloqueado,
-        Cliente.ultimo_contacto,
+        "id",
+        "numero_whatsapp",
+        "nombre",
+        "ciudad",
+        "barrio",
+        "es_mayorista",
+        "bloqueado",
+        "ultimo_contacto",
     ]
-    column_searchable_list = [
-        Cliente.numero_whatsapp, Cliente.nombre, Cliente.ciudad, Cliente.barrio,
-    ]
-    column_sortable_list = [Cliente.id, Cliente.ultimo_contacto, Cliente.primer_contacto]
-    column_default_sort = [("ultimo_contacto", True)]
+    column_searchable_list = ["numero_whatsapp", "nombre", "ciudad", "barrio"]
+    column_sortable_list = ["id", "ultimo_contacto", "primer_contacto"]
     page_size = 50
 
 
@@ -107,19 +107,17 @@ class PedidoAdmin(ModelView, model=Pedido):
     category = "Operación"
 
     column_list = [
-        Pedido.id,
-        Pedido.cliente_id,
-        Pedido.total,
-        Pedido.estado,
-        Pedido.ciudad,
-        Pedido.barrio,
-        Pedido.metodo_pago,
-        Pedido.created_at,
+        "id",
+        "cliente_id",
+        "total",
+        "estado",
+        "ciudad",
+        "barrio",
+        "metodo_pago",
+        "created_at",
     ]
-    column_sortable_list = [Pedido.id, Pedido.created_at, Pedido.total, Pedido.estado]
-    column_default_sort = [("created_at", True)]
-    column_searchable_list = [Pedido.ciudad, Pedido.barrio]
-    column_filters = [Pedido.estado, Pedido.metodo_pago]
+    column_sortable_list = ["id", "created_at", "total", "estado"]
+    column_searchable_list = ["ciudad", "barrio"]
     page_size = 50
 
 
@@ -130,19 +128,17 @@ class ConversacionAdmin(ModelView, model=Conversacion):
     category = "Operación"
 
     column_list = [
-        Conversacion.id,
-        Conversacion.cliente_id,
-        Conversacion.timestamp,
-        Conversacion.direccion,
-        Conversacion.tipo,
-        Conversacion.intent,
-        Conversacion.contenido,
-        Conversacion.costo_usd,
+        "id",
+        "cliente_id",
+        "timestamp",
+        "direccion",
+        "tipo",
+        "intent",
+        "contenido",
+        "costo_usd",
     ]
-    column_sortable_list = [Conversacion.id, Conversacion.timestamp]
-    column_default_sort = [("timestamp", True)]
-    column_searchable_list = [Conversacion.contenido]
-    column_filters = [Conversacion.direccion, Conversacion.intent, Conversacion.tipo]
+    column_sortable_list = ["id", "timestamp"]
+    column_searchable_list = ["contenido"]
     can_create = False
     can_edit = False
     page_size = 100
@@ -155,17 +151,15 @@ class AlertaFabioAdmin(ModelView, model=AlertaFabio):
     category = "Operación"
 
     column_list = [
-        AlertaFabio.id,
-        AlertaFabio.tipo,
-        AlertaFabio.cliente_id,
-        AlertaFabio.mensaje,
-        AlertaFabio.enviado_a_fabio_en,
-        AlertaFabio.resuelto,
-        AlertaFabio.created_at,
+        "id",
+        "tipo",
+        "cliente_id",
+        "mensaje",
+        "enviado_a_fabio_en",
+        "resuelto",
+        "created_at",
     ]
-    column_sortable_list = [AlertaFabio.id, AlertaFabio.created_at]
-    column_default_sort = [("created_at", True)]
-    column_filters = [AlertaFabio.tipo, AlertaFabio.resuelto]
+    column_sortable_list = ["id", "created_at"]
     form_columns = [
         AlertaFabio.tipo,
         AlertaFabio.mensaje,
@@ -181,16 +175,14 @@ class SesionAdmin(ModelView, model=Sesion):
     category = "Operación"
 
     column_list = [
-        Sesion.cliente_id,
-        Sesion.estado,
-        Sesion.producto_actual_ref,
-        Sesion.talla_interes,
-        Sesion.barrio,
-        Sesion.ultima_interaccion,
+        "cliente_id",
+        "estado",
+        "producto_actual_ref",
+        "talla_interes",
+        "barrio",
+        "ultima_interaccion",
     ]
-    column_sortable_list = [Sesion.ultima_interaccion]
-    column_default_sort = [("ultima_interaccion", True)]
-    column_filters = [Sesion.estado]
+    column_sortable_list = ["ultima_interaccion"]
     page_size = 50
 
 
@@ -201,12 +193,12 @@ class IntervencionHumanaAdmin(ModelView, model=IntervencionHumana):
     category = "Operación"
 
     column_list = [
-        IntervencionHumana.cliente_id,
-        IntervencionHumana.pausado_hasta,
-        IntervencionHumana.razon,
-        IntervencionHumana.activado_en,
+        "cliente_id",
+        "pausado_hasta",
+        "razon",
+        "activado_en",
     ]
-    column_sortable_list = [IntervencionHumana.pausado_hasta]
+    column_sortable_list = ["pausado_hasta"]
 
 
 # ─── CATÁLOGO ──────────────────────────────────────────────────────────────
@@ -219,17 +211,16 @@ class ProductoCacheAdmin(ModelView, model=ProductoCache):
     category = "Catálogo"
 
     column_list = [
-        ProductoCache.ref,
-        ProductoCache.nombre,
-        ProductoCache.categoria,
-        ProductoCache.precio_detal,
-        ProductoCache.tallas,
-        ProductoCache.origen,
-        ProductoCache.activo,
+        "ref",
+        "nombre",
+        "categoria",
+        "precio_detal",
+        "tallas",
+        "origen",
+        "activo",
     ]
-    column_searchable_list = [ProductoCache.ref, ProductoCache.nombre]
-    column_sortable_list = [ProductoCache.ref, ProductoCache.precio_detal, ProductoCache.sincronizado_en]
-    column_filters = [ProductoCache.categoria, ProductoCache.origen, ProductoCache.activo]
+    column_searchable_list = ["ref", "nombre"]
+    column_sortable_list = ["ref", "precio_detal", "sincronizado_en"]
     page_size = 50
 
 
@@ -240,14 +231,13 @@ class TarifaDomicilioAdmin(ModelView, model=TarifaDomicilio):
     category = "Catálogo"
 
     column_list = [
-        TarifaDomicilio.barrio,
-        TarifaDomicilio.zona,
-        TarifaDomicilio.precio,
-        TarifaDomicilio.tipo,
+        "barrio",
+        "zona",
+        "precio",
+        "tipo",
     ]
-    column_searchable_list = [TarifaDomicilio.barrio, TarifaDomicilio.zona]
-    column_sortable_list = [TarifaDomicilio.barrio, TarifaDomicilio.precio]
-    column_filters = [TarifaDomicilio.tipo, TarifaDomicilio.zona]
+    column_searchable_list = ["barrio", "zona"]
+    column_sortable_list = ["barrio", "precio"]
     page_size = 100
 
 
