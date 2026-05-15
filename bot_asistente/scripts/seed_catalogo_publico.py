@@ -154,6 +154,45 @@ def precio_to_decimal(v: Any) -> Decimal | None:
         return None
 
 
+# Colores comunes en el catálogo. Orden importa: matchear primero los
+# compuestos ('Azul Oscuro' antes que 'Azul'). Mantener en minúsculas
+# normalizadas (sin tildes) para hacer matching robusto.
+_COLORES_CONOCIDOS: list[str] = [
+    "Azul Oscuro", "Azul Medio", "Azul Claro",
+    "Verde Oliva", "Verde Militar", "Verde Claro",
+    "Beige Claro", "Café Claro", "Cafe Claro",
+    "Rosa", "Rojo", "Negro", "Blanco", "Gris", "Lila",
+    "Amarillo", "Beige", "Café", "Cafe", "Vinotinto",
+    "Vintage",  # acabado, no color exacto, pero los clientes lo usan
+]
+
+
+def _extraer_colores_del_nombre(nombre: str) -> list[str]:
+    """Heurística: si Shopify no declaró options[Color], extraer del nombre.
+
+    Caso real: 'Short Stretch Tiro Alto Azul Oscuro Clásico -SD0018'
+    → ['Azul Oscuro']. Sin esto, productos_cache.colores queda [] y el
+    bot no encuentra Shopify cuando el cliente filtra por color.
+    """
+    if not nombre:
+        return []
+    import unicodedata as _u
+    def _norm(s: str) -> str:
+        s = _u.normalize("NFKD", s)
+        return "".join(c for c in s if not _u.combining(c)).lower()
+    nombre_norm = _norm(nombre)
+    encontrados: list[str] = []
+    for color in _COLORES_CONOCIDOS:
+        color_norm = _norm(color)
+        if color_norm in nombre_norm:
+            # Evitar dobles ('Azul Oscuro' + 'Azul')
+            ya_capturado = any(_norm(c) in color_norm or color_norm in _norm(c)
+                               for c in encontrados)
+            if not ya_capturado:
+                encontrados.append(color)
+    return encontrados
+
+
 def shopify_to_producto(p: dict) -> Producto | None:
     """De la respuesta de products.json a Producto."""
     nombre = p.get("title")
@@ -191,6 +230,12 @@ def shopify_to_producto(p: dict) -> Producto | None:
             tallas = [str(v).strip() for v in valores]
         elif "color" in name:
             colores = [str(v).strip() for v in valores]
+
+    # Fallback: si Shopify NO declara options[Color], extraer del nombre del
+    # producto buscando palabras comunes. Caso real: "Short Stretch Tiro Alto
+    # Azul Oscuro Clásico -SD0018" → ["Azul Oscuro"].
+    if not colores:
+        colores = _extraer_colores_del_nombre(nombre or "")
 
     # Variants compactos
     variants_compact = [

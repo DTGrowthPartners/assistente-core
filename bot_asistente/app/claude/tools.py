@@ -353,25 +353,24 @@ async def handler_cotizar_envio(args: dict, ctx: dict) -> dict:
                     for c in candidatos[1:]
                 ],
             }
-        # Barrio no encontrado: aplicar tarifa default conservadora $12.000
-        # para no bloquear la venta. El equipo puede ajustar después si toca.
-        # Política dueño: "ponle 12000 a las desconocidas mientras tanto".
+        # Barrio no encontrado en la tabla. Política del dueño (2026-05-15):
+        # NO inventar tarifa. Decirle al cliente "consulto con el equipo y te
+        # confirmo en un momento" y escalar con escalar_a_equipo(tipo='duda_envio').
+        # Mientras el equipo confirma, NO seguir tomando datos del pedido.
         log.info(
-            "tools.cotizar_envio.barrio_desconocido_fallback",
+            "tools.cotizar_envio.barrio_desconocido_escalar",
             barrio=barrio_raw,
-            precio_fallback=12000,
         )
         return {
-            "encontrado": True,
+            "encontrado": False,
             "barrio_buscado": barrio_raw,
-            "barrio_match": barrio_raw,
-            "precio": "12000",
-            "tipo": "domicilio_local",
-            "zona": "DESCONOCIDA (tarifa default)",
-            "notas": (
-                "El barrio NO está en la tabla de tarifas. Aplicada tarifa "
-                "default $12.000. Comunica el precio al cliente con normalidad; "
-                "si pregunta confirma '$12.000 a tu zona'."
+            "instruccion_modelo": (
+                f"El barrio '{barrio_raw}' NO está en la tabla de tarifas y NO hay "
+                f"match aproximado. NO inventes una tarifa. Dile al cliente: "
+                f"'Déjame confirmar con el equipo la tarifa exacta a {barrio_raw} "
+                f"y te aviso en un momento.' Luego LLAMA `escalar_a_equipo` con "
+                f"tipo='duda_envio' y un mensaje detallado para Fabio. NO tomes "
+                f"el pedido hasta tener la tarifa confirmada."
             ),
         }
 
