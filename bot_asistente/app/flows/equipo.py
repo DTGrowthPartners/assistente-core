@@ -26,7 +26,7 @@ from app.claude.tools_equipo import (
     ejecutar_tool_equipo,
 )
 from app.config import get_settings
-from app.db.models import AlertaFabio, Cliente, Pedido
+from app.db.models import AlertaFabio, Cliente, Conversacion, Pedido
 from app.equipo.directorio import Miembro
 from app.logging_setup import log
 from app.validators.output_rules import stripear_emojis
@@ -117,6 +117,30 @@ async def procesar_mensaje_equipo(
         return
     if not instruccion:
         instruccion = "[Imagen sin texto; analízala y dime qué necesitas saber o qué acción quieres que tome.]"
+
+    # Si el equipo cita un mensaje (típicamente un mensaje del bot/cliente),
+    # inyectarlo al contexto: "Fabio citó X, su respuesta es Y"
+    if msg.quoted_message_id:
+        quoted_preview = msg.quoted_content or ""
+        quoted_msg_db = (await session.execute(
+            select(Conversacion).where(
+                Conversacion.whapi_message_id == msg.quoted_message_id
+            ).limit(1)
+        )).scalar_one_or_none()
+        if quoted_msg_db and quoted_msg_db.contenido:
+            quoted_preview = quoted_msg_db.contenido
+        if quoted_preview:
+            log.info(
+                "flow_equipo.miembro_cito",
+                miembro=miembro.nombre,
+                quoted_id=msg.quoted_message_id,
+                preview=quoted_preview[:80],
+            )
+            instruccion = (
+                f"[Te están respondiendo/citando este mensaje anterior:\n"
+                f"\"{quoted_preview[:600]}\"]\n\n"
+                f"Su instrucción: {instruccion}"
+            )
 
     log.info("flow_equipo.inbound", miembro=miembro.nombre, preview=instruccion[:100])
 

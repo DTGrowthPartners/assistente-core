@@ -29,6 +29,11 @@ class MensajeWhapi:
     timestamp: int                   # epoch seconds
     chat_id: str                     # whatsapp chat id
     raw: dict[str, Any]              # payload original
+    # Reply / quoted message: cuando el cliente cita un mensaje anterior (típicamente
+    # uno del bot mostrando un producto) seleccionándolo y respondiendo.
+    quoted_message_id: str | None = None  # whapi id del mensaje citado
+    quoted_content: str | None = None     # texto/caption del mensaje citado (preview)
+    quoted_from_me: bool | None = None    # True si el mensaje citado lo envió el bot
 
 
 # whapi payload events:
@@ -127,6 +132,35 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
     if not from_n:
         return None
 
+    # Reply/quoted message: whapi entrega el contexto del mensaje citado en
+    # `context` (a veces como `context.quoted_id`, a veces como objeto entero).
+    # Capturamos para que el flow pueda resolver "este me gusta" → producto X.
+    quoted_id: str | None = None
+    quoted_content: str | None = None
+    quoted_from_me: bool | None = None
+    ctx = msg.get("context") or {}
+    if isinstance(ctx, dict) and ctx:
+        quoted_id = (
+            ctx.get("quoted_id")
+            or ctx.get("quoted_message_id")
+            or ctx.get("id")
+        )
+        quoted_from_me = ctx.get("from_me") if "from_me" in ctx else None
+        # Preview del cuerpo citado: texto plano o caption
+        qc = ctx.get("quoted_content") or ctx.get("quoted") or {}
+        if isinstance(qc, dict):
+            quoted_content = (
+                qc.get("body")
+                or qc.get("text")
+                or qc.get("caption")
+                or (qc.get("image") or {}).get("caption")
+            )
+        elif isinstance(qc, str):
+            quoted_content = qc
+        # Fallback: a veces el preview viene en context.body/text directamente
+        if not quoted_content:
+            quoted_content = ctx.get("body") or ctx.get("text") or ctx.get("caption")
+
     return MensajeWhapi(
         id=str(msg_id),
         from_number=from_n,
@@ -142,6 +176,9 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
         timestamp=int(msg.get("timestamp", 0)),
         chat_id=str(msg.get("chat_id", "")),
         raw=msg,
+        quoted_message_id=str(quoted_id) if quoted_id else None,
+        quoted_content=quoted_content,
+        quoted_from_me=quoted_from_me,
     )
 
 

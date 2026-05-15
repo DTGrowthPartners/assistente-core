@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.claude.client import RespuestaClaude, conversar
 from app.claude.intent import clasificar
 from app.config import get_settings
-from app.db.models import AlertaFabio, Cliente, Pedido, Sesion
+from app.db.models import AlertaFabio, Cliente, Conversacion, Pedido, Sesion
 from app.db.repos import (
     get_or_create_sesion,
     guardar_conversacion,
@@ -72,6 +72,31 @@ async def procesar_mensaje_inbound(
         else:
             log.info("flow.inbound_sin_texto", cliente=cliente_numero, tipo=msg.tipo)
             return []
+
+    # Si el cliente CITÓ un mensaje anterior (reply/seleccionar), inyectar el
+    # contexto del mensaje citado. Crucial cuando dice "este me gusta" tras
+    # citar el mensaje del bot con un producto específico.
+    if msg.quoted_message_id:
+        quoted_preview = msg.quoted_content or ""
+        quoted_msg_db = (await session.execute(
+            select(Conversacion).where(
+                Conversacion.whapi_message_id == msg.quoted_message_id
+            ).limit(1)
+        )).scalar_one_or_none()
+        if quoted_msg_db and quoted_msg_db.contenido:
+            quoted_preview = quoted_msg_db.contenido
+        if quoted_preview:
+            log.info(
+                "flow.cliente_cito_mensaje",
+                cliente=cliente_numero,
+                quoted_id=msg.quoted_message_id,
+                preview=quoted_preview[:80],
+            )
+            contenido_usuario = (
+                f"[El cliente respondió/citó este mensaje anterior tuyo:\n"
+                f"\"{quoted_preview[:500]}\"]\n\n"
+                f"Su respuesta: {contenido_usuario}"
+            )
 
     # 1. Sesión + historial (hasta 24h, marcando mensajes >4h con separador)
     sesion = await get_or_create_sesion(session, cliente_id)
