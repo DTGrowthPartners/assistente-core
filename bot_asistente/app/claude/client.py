@@ -68,6 +68,7 @@ async def conversar(
     max_loops: int = 5,
     imagen_base64: str | None = None,
     imagen_mime: str | None = None,
+    extra_system: str | None = None,
 ) -> RespuestaClaude:
     """
     Conversación con Claude usando tool use loop.
@@ -104,6 +105,10 @@ async def conversar(
 
     messages = list(historial) + [{"role": "user", "content": last_msg_content}]
     system = construir_system_prompt()
+    if extra_system:
+        # Bloque dinámico (datos del cliente, pedido en curso). Va al final y
+        # SIN cache_control — cambia turno a turno y rompería el cache del resto.
+        system = list(system) + [{"type": "text", "text": extra_system}]
     tools_usadas: list[str] = []
     respuesta = RespuestaClaude(texto="", modelo=settings.claude_model_principal)
 

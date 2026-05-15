@@ -16,13 +16,13 @@ import base64
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.claude.client import RespuestaClaude, conversar
 from app.claude.intent import clasificar
 from app.config import get_settings
-from app.db.models import Sesion
+from app.db.models import AlertaFabio, Cliente, Pedido, Sesion
 from app.db.repos import (
     get_or_create_sesion,
     guardar_conversacion,
@@ -71,7 +71,7 @@ async def procesar_mensaje_inbound(
 
     # 1. Sesión + historial
     sesion = await get_or_create_sesion(session, cliente_id)
-    historial_db = await ultimos_mensajes(session, cliente_id, n=10)
+    historial_db = await ultimos_mensajes(session, cliente_id, n=20)
 
     historial_claude: list[dict] = []
     for h in historial_db[:-1]:  # excluimos el último (que es el actual inbound)
@@ -140,12 +140,20 @@ async def procesar_mensaje_inbound(
         "inbound_imagen_bytes": imagen_bytes,
         "inbound_imagen_mime": imagen_mime,
     }
+
+    # Bloque dinámico de contexto: datos conocidos del cliente + pedido en
+    # curso + si ya pagó. Se inyecta como bloque NO CACHEADO del system
+    # prompt para que Claude lo tenga muy presente turno a turno y no le
+    # vuelva a preguntar al cliente datos que ya dio.
+    extra_system = await _construir_contexto_cliente(session, cliente_id)
+
     respuesta = await conversar(
         historial=historial_claude,
         mensaje_usuario=contenido_usuario,
         ctx=ctx,
         imagen_base64=imagen_b64,
         imagen_mime=imagen_mime,
+        extra_system=extra_system,
     )
 
     # 4.1. Persistir productos mostrados en la sesión (para próximos turnos)
@@ -328,3 +336,74 @@ async def _validar_y_reescribir_si_necesario(
     respuesta.tools_usadas.extend(retry.tools_usadas)
 
     return nuevo_texto
+
+
+async def _construir_contexto_cliente(session: AsyncSession, cliente_id: int) -> str:
+    """Bloque dinámico que inyectamos al system para que Claude no le pida
+    al cliente datos que ya dio (nombre, ciudad, barrio, pedido en curso,
+    comprobante recibido)."""
+    cliente = (await session.execute(
+        select(Cliente).where(Cliente.id == cliente_id)
+    )).scalar_one_or_none()
+    if not cliente:
+        return ""
+
+    lineas: list[str] = ["## ESTADO ACTUAL DEL CLIENTE (úsalo, NO vuelvas a preguntar lo que ya está aquí)"]
+    lineas.append(f"- Número: {cliente.numero_whatsapp}")
+    if cliente.nombre:
+        lineas.append(f"- Nombre: {cliente.nombre}")
+    if cliente.ciudad:
+        lineas.append(f"- Ciudad: {cliente.ciudad}")
+    if cliente.barrio:
+        lineas.append(f"- Barrio: {cliente.barrio}")
+    if cliente.es_mayorista:
+        lineas.append("- Es mayorista (aplica precio mayorista en cotizaciones).")
+
+    # Pedido en curso: el último pedido del cliente en los últimos 60 min,
+    # estado NO 'cancelado' ni 'despachado'.
+    ventana = datetime.now(timezone.utc) - timedelta(minutes=60)
+    pedido = (await session.execute(
+        select(Pedido).where(
+            Pedido.cliente_id == cliente_id,
+            Pedido.created_at >= ventana,
+        ).order_by(Pedido.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    if pedido:
+        lineas.append(
+            f"- **Pedido en curso #{pedido.id}**: total ${int(pedido.total):,} "
+            f"({pedido.estado}). Método: {pedido.metodo_pago or 'no definido'}."
+        )
+        if pedido.items:
+            refs = []
+            for it in pedido.items[:5]:
+                ref = it.get("ref") or it.get("descripcion") or "?"
+                talla = it.get("talla")
+                qty = it.get("cantidad", 1)
+                refs.append(f"{ref}" + (f" talla {talla}" if talla else "") + (f" x{qty}" if qty != 1 else ""))
+            if refs:
+                lineas.append(f"  Items: {'; '.join(refs)}")
+
+    # ¿Ya envió comprobante? Si hay alerta abierta de tipo comprobante_pago
+    # en últimos 30 min, lo decimos explícito.
+    ventana_comp = datetime.now(timezone.utc) - timedelta(minutes=30)
+    alerta_comp = (await session.execute(
+        select(AlertaFabio).where(
+            AlertaFabio.cliente_id == cliente_id,
+            AlertaFabio.tipo == "comprobante_pago",
+            AlertaFabio.created_at >= ventana_comp,
+        ).limit(1)
+    )).scalar_one_or_none()
+    if alerta_comp:
+        lineas.append(
+            "- **YA ENVIÓ COMPROBANTE DE PAGO** (escalado a equipo, alerta abierta). "
+            "NO le vuelvas a mandar los datos del banco. Si pregunta por el pago, "
+            "dile que el equipo está verificándolo."
+        )
+
+    if len(lineas) == 1:
+        # Solo el header, sin datos útiles. No inyectamos nada.
+        return ""
+
+    lineas.append("")
+    lineas.append("Si el cliente ya respondió algo arriba o en el historial, NO se lo vuelvas a preguntar.")
+    return "\n".join(lineas)

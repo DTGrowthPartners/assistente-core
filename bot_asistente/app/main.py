@@ -338,20 +338,41 @@ async def webhook(
     return {"status": "ok", "procesados": resultados}
 
 
+# Locks por cliente_id — serializan mensajes del mismo cliente para evitar
+# DeadlockDetectedError en Postgres + duplicados en escalar/pedido cuando
+# llegan varios webhooks casi simultáneos (cliente manda 2-3 fotos seguidas).
+_cliente_locks: dict[int, asyncio.Lock] = {}
+
+
+def _lock_for_cliente(cliente_id: int) -> asyncio.Lock:
+    lock = _cliente_locks.get(cliente_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _cliente_locks[cliente_id] = lock
+    return lock
+
+
 async def _procesar_async(cliente_id: int, cliente_numero: str, msg: MensajeWhapi) -> None:
-    """Procesa el mensaje fuera del request — abre su propia session DB."""
-    async with async_session_factory() as session:
-        try:
-            await procesar_mensaje_inbound(
-                session=session,
-                cliente_id=cliente_id,
-                cliente_numero=cliente_numero,
-                msg=msg,
-            )
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            log.exception("background.flow_fail", cliente=cliente_numero)
+    """Procesa el mensaje fuera del request — abre su propia session DB.
+
+    Toma un lock por cliente_id para serializar los mensajes del mismo
+    cliente. Sin esto, dos webhooks concurrentes del mismo cliente pueden
+    chocar en Postgres (deadlock) y/o duplicar escalaciones/pedidos.
+    """
+    lock = _lock_for_cliente(cliente_id)
+    async with lock:
+        async with async_session_factory() as session:
+            try:
+                await procesar_mensaje_inbound(
+                    session=session,
+                    cliente_id=cliente_id,
+                    cliente_numero=cliente_numero,
+                    msg=msg,
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                log.exception("background.flow_fail", cliente=cliente_numero)
 
 
 async def _procesar_equipo_async(miembro, msg: MensajeWhapi) -> None:
