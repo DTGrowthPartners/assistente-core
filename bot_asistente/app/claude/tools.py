@@ -403,8 +403,39 @@ async def handler_enviar_imagen_producto(args: dict, ctx: dict) -> dict:
 
 
 async def handler_enviar_imagen_banco(args: dict, ctx: dict) -> dict:
+    from datetime import timedelta
     banco = args["banco"]
     cliente_numero = ctx["cliente_numero"]
+    cliente_id = ctx.get("cliente_id")
+    session: AsyncSession = ctx["session"]
+
+    # Dedupe: si ya hay alerta abierta de comprobante_pago para este cliente,
+    # significa que ya pagó — NO le reenvíes los datos del banco.
+    # Si la última vez que enviamos imagen_banco fue hace <5 min, tampoco.
+    if cliente_id:
+        ventana = datetime.now(timezone.utc) - timedelta(minutes=10)
+        alerta_pago = (await session.execute(
+            select(AlertaFabio).where(
+                AlertaFabio.cliente_id == cliente_id,
+                AlertaFabio.tipo == "comprobante_pago",
+                AlertaFabio.created_at >= ventana,
+            ).limit(1)
+        )).scalar_one_or_none()
+        if alerta_pago:
+            log.info(
+                "tools.enviar_imagen_banco.dedupe_skip_pago_recibido",
+                cliente_id=cliente_id,
+                alerta_id=alerta_pago.id,
+            )
+            return {
+                "enviado": False,
+                "razon": (
+                    "El cliente ya envió comprobante recientemente. "
+                    "NO reenvíes los datos del banco. Avanza con el pedido "
+                    "(toma_pedido_manual / agradece y confirma que el equipo verifica el pago)."
+                ),
+                "alerta_existente_id": alerta_pago.id,
+            }
 
     paths = {
         "bancolombia": "bancolombia.webp",
