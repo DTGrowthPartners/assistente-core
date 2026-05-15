@@ -14,7 +14,7 @@ from typing import Awaitable, Callable
 from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AlertaFabio, Cliente, Conversacion, Pedido
+from app.db.models import AlertaFabio, Cliente, Conversacion, Pedido, ProductoCache
 from app.db.repos import get_or_create_cliente, guardar_conversacion
 from app.logging_setup import log
 from app.utils.humanizer import sleep_humano
@@ -108,6 +108,22 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
             "properties": {
                 "numero": {"type": "string"},
                 "nombre_parcial": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "consultar_producto",
+        "description": (
+            "Busca un producto en el catálogo por referencia (ej. SD0017, "
+            "INN5682, REF-29686) o por texto en el nombre. Devuelve precio, "
+            "tallas, origen (shopify/html_catalogo). Úsalo ANTES de pedirle "
+            "al usuario un precio que probablemente está en el catálogo."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Referencia exacta o parcial"},
+                "nombre_parcial": {"type": "string", "description": "Texto a buscar en el nombre"},
             },
         },
     },
@@ -289,6 +305,45 @@ async def handler_consultar_cliente(args: dict, ctx: dict) -> dict:
     }
 
 
+async def handler_consultar_producto(args: dict, ctx: dict) -> dict:
+    """Busca productos en productos_cache por ref exacta/parcial o nombre."""
+    session: AsyncSession = ctx["session"]
+    ref = (args.get("ref") or "").strip()
+    nombre = (args.get("nombre_parcial") or "").strip()
+
+    if not ref and not nombre:
+        return {"productos": [], "razon": "no se pasó ref ni nombre_parcial"}
+
+    stmt = select(ProductoCache)
+    filtros = []
+    if ref:
+        # Match exacto primero, sino ILIKE
+        filtros.append(ProductoCache.ref.ilike(f"%{ref}%"))
+    if nombre:
+        filtros.append(ProductoCache.nombre.ilike(f"%{nombre}%"))
+    if len(filtros) == 1:
+        stmt = stmt.where(filtros[0])
+    else:
+        from sqlalchemy import or_ as sa_or
+        stmt = stmt.where(sa_or(*filtros))
+
+    rows = (await session.execute(stmt.limit(8))).scalars().all()
+    return {
+        "productos": [
+            {
+                "ref": p.ref,
+                "nombre": p.nombre,
+                "precio_detal": float(p.precio_detal) if p.precio_detal else None,
+                "precio_mayor": float(p.precio_mayor) if p.precio_mayor else None,
+                "tallas": p.tallas or [],
+                "colores": p.colores or [],
+                "origen": p.origen,
+            }
+            for p in rows
+        ],
+    }
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # DISPATCHER
 # ════════════════════════════════════════════════════════════════════════════
@@ -302,6 +357,7 @@ HANDLERS_EQUIPO: dict[str, Handler] = {
     "consultar_alertas_abiertas": handler_consultar_alertas_abiertas,
     "consultar_pedidos": handler_consultar_pedidos,
     "consultar_cliente": handler_consultar_cliente,
+    "consultar_producto": handler_consultar_producto,
 }
 
 
