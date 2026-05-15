@@ -276,6 +276,10 @@ async def handler_buscar_productos(args: dict, ctx: dict) -> dict:
     if texto := args.get("texto_libre"):
         stmt = stmt.where(ProductoCache.nombre.ilike(f"%{texto}%"))
 
+    # Si el cliente especificó talla, recordarla para próximos turnos
+    if talla := args.get("talla"):
+        await _update_sesion(session, ctx.get("cliente_id"), talla_interes=str(talla))
+
     stmt = stmt.limit(args.get("max_resultados", 5))
     productos = (await session.execute(stmt)).scalars().all()
 
@@ -314,6 +318,11 @@ async def handler_cotizar_envio(args: dict, ctx: dict) -> dict:
     session: AsyncSession = ctx["session"]
     barrio_raw = args["barrio"]
     barrio_norm = _norm(barrio_raw)
+
+    # Recordar el barrio que mencionó el cliente (versión raw — el cliente
+    # escribió esa, no la normalizada). Si después la tarifa hace match
+    # difuso a otro nombre, actualizamos abajo a la versión canónica.
+    await _update_sesion(session, ctx.get("cliente_id"), barrio=barrio_raw)
 
     # Búsqueda exacta primero
     stmt = select(TarifaDomicilio).where(TarifaDomicilio.barrio_normalizado == barrio_norm)
@@ -407,6 +416,10 @@ async def handler_enviar_imagen_producto(args: dict, ctx: dict) -> dict:
     # Registrar como mostrada (set mutado por referencia para el resto del turno)
     productos_mostrados.add(ref)
     ctx["productos_mostrados"] = list(productos_mostrados)
+
+    # Persistir el último producto mostrado en Sesion — si después el cliente
+    # dice "lo quiero" sin más, "lo" se refiere a ESTE producto.
+    await _update_sesion(session, ctx.get("cliente_id"), producto_actual_ref=ref)
     return {"enviado": True, "ref": ref, "caption": caption}
 
 
@@ -539,6 +552,12 @@ async def handler_enviar_imagen_banco(args: dict, ctx: dict) -> dict:
                 new_meta = dict(cliente_now.metadata_ or {})
                 new_meta[f"last_banco_{banco}_ts"] = now_iso
                 cliente_now.metadata_ = new_meta
+        # Persistir banco/método en Sesion para próximos turnos
+        await _update_sesion(
+            session, cliente_id,
+            metodo_pago_elegido="transferencia",
+            banco_elegido=banco,
+        )
         return {"enviado": True, "banco": banco, "via": "imagen"}
     except FileNotFoundError:
         log.warning("tools.enviar_imagen_banco.no_archivo", banco=banco, path=full_path)
@@ -619,6 +638,12 @@ async def handler_crear_draft_order(args: dict, ctx: dict) -> dict:
             ),
         }
 
+    # Persistir en Sesion: el cliente eligió pagar por link Shopify
+    await _update_sesion(
+        session, ctx.get("cliente_id"),
+        estado="esperando_pago",
+        metodo_pago_elegido="link_shopify",
+    )
     return {"creado": True, "items": productos_resueltos, "shopify_response": result}
 
 
@@ -747,6 +772,15 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
                 update(Cliente).where(Cliente.id == cliente_id).values(**cambios)
             )
             log.info("tools.cliente.enriquecido", cliente_id=cliente_id, cambios=list(cambios.keys()))
+
+    # Actualizar Sesion con datos del pedido para que Claude los vea en próximos turnos
+    await _update_sesion(
+        session, cliente_id,
+        estado="datos_completos",
+        direccion_envio=args.get("direccion"),
+        barrio=args.get("barrio"),
+        metodo_pago_elegido=args.get("metodo_pago"),
+    )
 
     # Mensaje detallado para Fabio
     detalle = (
@@ -925,6 +959,38 @@ async def handler_programar_seguimiento(args: dict, ctx: dict) -> dict:
     )
     # TODO Fase 2: actualizar sesiones.proximo_seguimiento
     return {"programado": True, "horas": args["horas"]}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# HELPERS DE SESIÓN — persistir preferencias del cliente para próximos turnos
+# ════════════════════════════════════════════════════════════════════════════
+
+async def _update_sesion(
+    session: AsyncSession,
+    cliente_id: int | None,
+    **campos: object,
+) -> None:
+    """Actualiza la fila de sesiones del cliente con los campos no-None que llegan.
+
+    Se llama desde los handlers cuando se aprende algo nuevo del cliente
+    (talla, color, barrio, banco elegido, etc.) para que el próximo turno
+    Claude lo vea inyectado en el system prompt vía
+    `_construir_contexto_cliente`. Sin esto, la BD lo guarda pero el modelo
+    nunca lo ve y le sigue preguntando lo mismo.
+
+    No-op si cliente_id es None o no se pasa nada.
+    """
+    if not cliente_id or not campos:
+        return
+    valores = {k: v for k, v in campos.items() if v is not None}
+    if not valores:
+        return
+    try:
+        await session.execute(
+            update(Sesion).where(Sesion.cliente_id == cliente_id).values(**valores)
+        )
+    except Exception as e:
+        log.warning("tools._update_sesion.fail", cliente_id=cliente_id, error=str(e))
 
 
 # ════════════════════════════════════════════════════════════════════════════

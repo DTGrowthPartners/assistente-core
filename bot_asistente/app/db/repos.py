@@ -144,17 +144,17 @@ async def ultimos_mensajes(
     session: AsyncSession,
     cliente_id: int,
     n: int = 10,
-    horas_max: int = 4,
+    horas_max: int = 24,
 ) -> list[Conversacion]:
     """
     Últimos N mensajes del cliente DE LAS ÚLTIMAS `horas_max` HORAS,
     ordenados cronológicamente.
 
-    Por qué el límite temporal: si el cliente vuelve después de horas/días con
-    un simple "Hola", el modelo puede asumir contexto viejo (precios cotizados,
-    productos discutidos, supuestos cierres) y alucinar respuestas incorrectas
-    como confirmar pedidos que nunca se hicieron. Mejor empezar conversación
-    fresca.
+    Por qué el límite temporal: si el cliente vuelve después de varios días
+    con un simple "Hola", el modelo puede asumir contexto viejo y alucinar.
+    Subimos a 24h (un día comercial) y dejamos que el caller marque mensajes
+    >4h con un separador visible para que el modelo entienda el gap sin
+    inventar continuidad.
     """
     desde = datetime.now(timezone.utc) - timedelta(hours=horas_max)
     stmt = (

@@ -69,12 +69,27 @@ async def procesar_mensaje_inbound(
             log.info("flow.inbound_sin_texto", cliente=cliente_numero, tipo=msg.tipo)
             return
 
-    # 1. Sesión + historial
+    # 1. Sesión + historial (hasta 24h, marcando mensajes >4h con separador)
     sesion = await get_or_create_sesion(session, cliente_id)
     historial_db = await ultimos_mensajes(session, cliente_id, n=20)
 
+    ahora_utc = datetime.now(timezone.utc)
+    umbral_viejo = ahora_utc - timedelta(hours=4)
     historial_claude: list[dict] = []
+    separador_insertado = False
     for h in historial_db[:-1]:  # excluimos el último (que es el actual inbound)
+        ts = h.timestamp
+        if ts and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        # Si saltamos de mensajes >4h a mensajes recientes, inyectar un separador
+        # como user-message para que el modelo entienda el gap y NO asuma
+        # continuidad ("seguimos donde quedamos").
+        if not separador_insertado and ts and ts >= umbral_viejo and historial_claude:
+            historial_claude.append({
+                "role": "user",
+                "content": "[— Sistema: mensajes anteriores son de varias horas atrás. El cliente probablemente retoma el chat ahora. No asumas continuidad explícita; saluda brevemente si corresponde. —]",
+            })
+            separador_insertado = True
         if h.direccion == "inbound" and h.contenido:
             historial_claude.append({"role": "user", "content": h.contenido})
         elif h.direccion in ("outbound", "humano") and h.contenido:
@@ -399,6 +414,46 @@ async def _construir_contexto_cliente(session: AsyncSession, cliente_id: int) ->
             "NO le vuelvas a mandar los datos del banco. Si pregunta por el pago, "
             "dile que el equipo está verificándolo."
         )
+
+    # Estado de la SESIÓN — preferencias detectadas en turnos previos (talla,
+    # banco elegido, producto que está viendo, etc.). Antes esta info se
+    # guardaba en BD pero nunca llegaba a Claude → el bot preguntaba lo mismo.
+    sesion = (await session.execute(
+        select(Sesion).where(Sesion.cliente_id == cliente_id)
+    )).scalar_one_or_none()
+    if sesion:
+        sesion_lineas: list[str] = []
+        if sesion.producto_actual_ref:
+            sesion_lineas.append(
+                f"- Producto que está viendo / le mostraste último: **{sesion.producto_actual_ref}** "
+                "(si el cliente dice 'lo quiero', 'este', 'el que me mostraste' se refiere a ese)"
+            )
+        if sesion.talla_interes:
+            sesion_lineas.append(f"- Talla que busca: {sesion.talla_interes}")
+        if sesion.color_interes:
+            sesion_lineas.append(f"- Color preferido: {sesion.color_interes}")
+        if sesion.metodo_pago_elegido:
+            extra = f" (banco: {sesion.banco_elegido})" if sesion.banco_elegido else ""
+            sesion_lineas.append(f"- Método de pago elegido: {sesion.metodo_pago_elegido}{extra}")
+        # `sesion.barrio` puede traer algo más reciente que `cliente.barrio`
+        if sesion.barrio and sesion.barrio != (cliente.barrio or ""):
+            sesion_lineas.append(f"- Barrio mencionado en esta sesión: {sesion.barrio}")
+        if sesion.direccion_envio:
+            sesion_lineas.append(f"- Dirección de envío dada: {sesion.direccion_envio}")
+        if sesion.productos_mostrados:
+            refs = ", ".join(sesion.productos_mostrados[:8])
+            sesion_lineas.append(
+                f"- Productos cuya foto YA le enviaste: [{refs}]. "
+                "NO las reenvíes, refiérete a ellos por nombre/ref."
+            )
+        if sesion.estado and sesion.estado != "inicial":
+            sesion_lineas.append(f"- Estado de la venta: {sesion.estado}")
+        if sesion.notas_internas:
+            sesion_lineas.append(f"- Notas internas previas: {sesion.notas_internas}")
+        if sesion_lineas:
+            lineas.append("")
+            lineas.append("## ESTADO DE LA SESIÓN (preferencias detectadas en turnos anteriores)")
+            lineas.extend(sesion_lineas)
 
     if len(lineas) == 1:
         # Solo el header, sin datos útiles. No inyectamos nada.
