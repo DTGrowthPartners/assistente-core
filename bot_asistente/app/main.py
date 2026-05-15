@@ -247,6 +247,25 @@ async def webhook(
 
         # Outbound de asesora humana → pausar bot
         if msg.is_from_human:
+            # Ignorar metadatos (reactions, read-receipts, edits, polls, etc.).
+            # whapi los manda como type=reaction/etc → parser los normaliza a
+            # tipo="desconocido" sin texto ni media. NO son comunicación real
+            # con el cliente y NO deben pausar el bot.
+            es_metadato = (
+                msg.tipo == "desconocido"
+                and not (msg.texto or "").strip()
+                and not msg.media_url
+            )
+            if es_metadato:
+                log.debug(
+                    "webhook.humano_metadato_ignorado",
+                    cliente=msg.from_number,
+                    msg_id=msg.id,
+                    raw_type=(msg.raw or {}).get("type"),
+                )
+                resultados.append({"id": msg.id, "status": "human_metadata_ignored"})
+                continue
+
             cliente = await get_or_create_cliente(session, msg.from_number)
             await pausar_bot(session, cliente.id, horas=4, razon="asesora humana intervino")
             await guardar_conversacion(
