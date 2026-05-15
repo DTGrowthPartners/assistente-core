@@ -60,9 +60,14 @@ async def procesar_mensaje_inbound(
     """
     contenido_usuario = msg.texto or ""
     if not contenido_usuario.strip():
-        # Mensaje sin texto procesable (ej. sticker sin caption). Por ahora ignoramos.
-        log.info("flow.inbound_sin_texto", cliente=cliente_numero, tipo=msg.tipo)
-        return
+        # Imagen sin caption: típicamente es un comprobante de pago o foto de
+        # producto. La pasamos a Claude con un placeholder textual para que
+        # decida (vía visión + contexto de conversación).
+        if msg.tipo == "imagen" and msg.media_url:
+            contenido_usuario = "[El cliente envió una imagen sin texto adjunto.]"
+        else:
+            log.info("flow.inbound_sin_texto", cliente=cliente_numero, tipo=msg.tipo)
+            return
 
     # 1. Sesión + historial
     sesion = await get_or_create_sesion(session, cliente_id)
