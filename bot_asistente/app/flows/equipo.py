@@ -10,9 +10,11 @@ Distinto al flow de cliente:
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import httpx
 from anthropic import AsyncAnthropic
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +30,7 @@ from app.db.models import AlertaFabio, Cliente, Pedido
 from app.equipo.directorio import Miembro
 from app.logging_setup import log
 from app.validators.output_rules import stripear_emojis
-from app.whapi.client import enviar_texto
+from app.whapi.client import auth_headers, enviar_texto
 from app.whapi.parser import MensajeWhapi
 
 settings = get_settings()
@@ -107,11 +109,31 @@ async def procesar_mensaje_equipo(
 ) -> None:
     """Procesa un inbound de un miembro del equipo y responde con confirmación."""
     instruccion = (msg.texto or "").strip()
-    if not instruccion:
+
+    # Si llega una imagen sin texto, igual procesamos (multimodal) — el equipo
+    # a veces manda foto del producto, comprobante físico, etc.
+    if not instruccion and not (msg.tipo == "imagen" and msg.media_url):
         log.info("flow_equipo.sin_texto", miembro=miembro.nombre)
         return
+    if not instruccion:
+        instruccion = "[Imagen sin texto; analízala y dime qué necesitas saber o qué acción quieres que tome.]"
 
     log.info("flow_equipo.inbound", miembro=miembro.nombre, preview=instruccion[:100])
+
+    # Descargar imagen si llegó (multimodal vía visión)
+    imagen_b64: str | None = None
+    imagen_mime: str | None = None
+    if msg.tipo == "imagen" and msg.media_url:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(msg.media_url, headers=auth_headers())
+                if r.status_code < 400 and len(r.content) <= 5 * 1024 * 1024:
+                    imagen_b64 = base64.b64encode(r.content).decode("ascii")
+                    imagen_mime = msg.media_mime or "image/jpeg"
+                    log.info("flow_equipo.imagen.descargada",
+                             miembro=miembro.nombre, bytes=len(r.content))
+        except Exception as e:
+            log.warning("flow_equipo.imagen.fail_download", error=str(e))
 
     # 1. Construir contexto operativo
     contexto = await _construir_contexto(session)
@@ -130,7 +152,22 @@ async def procesar_mensaje_equipo(
         },
     ]
 
-    messages = [{"role": "user", "content": instruccion}]
+    # Construir el primer user message (multimodal si hay imagen)
+    if imagen_b64:
+        user_content: list[dict] | str = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": imagen_mime or "image/jpeg",
+                    "data": imagen_b64,
+                },
+            },
+            {"type": "text", "text": instruccion},
+        ]
+    else:
+        user_content = instruccion
+    messages = [{"role": "user", "content": user_content}]
     ctx_tool = {
         "session": session,
         "miembro_nombre": miembro.nombre,
