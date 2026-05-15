@@ -10,13 +10,16 @@ from __future__ import annotations
 import html
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Cliente, Conversacion
+from app.db.repos import guardar_conversacion, pausar_bot
 from app.db.session import get_session
+from app.logging_setup import log
+from app.whapi.client import enviar_texto
 
 router = APIRouter(prefix="/admin/chats", tags=["admin-chats"])
 
@@ -187,6 +190,10 @@ async def chat_cliente(
     total = len(mensajes)
     bloqueado_chip = '<span class="badge badge-blocked">BLOQUEADO</span>' if cliente.bloqueado else ''
 
+    flash = ""
+    if request.query_params.get("msg") == "sent_ok":
+        flash = '<div class="flash">Mensaje enviado al cliente. El bot queda pausado 4 horas.</div>'
+
     html_resp = _HILO_TEMPLATE.replace("__BASE_STYLES__", _BASE_STYLES)
     repls = {
         "{{nombre}}": html.escape(nombre),
@@ -198,10 +205,62 @@ async def chat_cliente(
         "{{ultimo_contacto}}": _fmt_fecha(cliente.ultimo_contacto),
         "{{bloqueado_chip}}": bloqueado_chip,
         "{{burbujas}}": "".join(burbujas) or '<p style="text-align:center;color:#9ca3af;">Sin mensajes.</p>',
+        "{{flash}}": flash,
     }
     for k, v in repls.items():
         html_resp = html_resp.replace(k, v)
     return HTMLResponse(html_resp)
+
+
+@router.post("/cliente/{cliente_id}/send")
+async def enviar_mensaje_manual(
+    cliente_id: int,
+    request: Request,
+    mensaje: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Envía un mensaje manual al cliente desde el admin.
+
+    Pausa el bot 4 horas (registramos como direccion='humano') para que
+    el bot no responda encima mientras el operador maneja la conversación.
+    """
+    if not _check_auth(request):
+        raise HTTPException(401, "No autenticado")
+
+    texto = (mensaje or "").strip()
+    if not texto:
+        return RedirectResponse(f"/admin/chats/cliente/{cliente_id}", status_code=303)
+
+    cliente = (await session.execute(
+        select(Cliente).where(Cliente.id == cliente_id)
+    )).scalar_one_or_none()
+    if not cliente:
+        raise HTTPException(404, "Cliente no encontrado")
+
+    try:
+        await enviar_texto(cliente.numero_whatsapp, texto)
+    except Exception as e:
+        log.error("admin.chats.enviar_fail", cliente_id=cliente_id, error=str(e))
+        raise HTTPException(502, f"Falló envío whapi: {e}")
+
+    await guardar_conversacion(
+        session,
+        cliente_id=cliente_id,
+        direccion="humano",
+        tipo="texto",
+        contenido=texto,
+        metadata={"via": "admin_chats"},
+    )
+    await pausar_bot(session, cliente_id, horas=4, razon="enviado desde admin/chats")
+    await session.commit()
+
+    log.info(
+        "admin.chats.enviado",
+        cliente_id=cliente_id,
+        numero=cliente.numero_whatsapp,
+        chars=len(texto),
+    )
+    return RedirectResponse(f"/admin/chats/cliente/{cliente_id}?msg=sent_ok", status_code=303)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -295,6 +354,14 @@ __BASE_STYLES__
   .msg-out .msg-bubble { background: #dcf8c6; color: #111827; border-bottom-right-radius: 4px; }
   .msg-meta { font-size: 10px; color: var(--muted); margin-top: 3px; padding: 0 4px; }
   .msg-author { font-size: 10px; color: #8a8f99; font-style: italic; margin-bottom: 2px; padding: 0 4px; }
+
+  .send-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-top: 14px; }
+  .send-box textarea { width: 100%; min-height: 60px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font: inherit; font-size: 13px; box-sizing: border-box; }
+  .send-box .send-row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px; }
+  .send-box .hint { font-size: 11px; color: var(--muted); flex: 1; }
+  .send-btn { background: #10b981; color: #fff; border: none; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .send-btn:hover { background: #059669; }
+  .flash { background: #ecfdf5; color: #065f46; border: 1px solid #6ee7b7; padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; }
 </style>
 </head><body>
 <div class="topbar">
@@ -317,8 +384,18 @@ __BASE_STYLES__
       <a href="/admin/actions/cliente/{{cliente_id}}/nuke-form" class="danger">Eliminar cliente completo</a>
     </div>
   </div>
+  {{flash}}
   <div class="thread">
     {{burbujas}}
+  </div>
+  <div class="send-box">
+    <form method="POST" action="/admin/chats/cliente/{{cliente_id}}/send">
+      <textarea name="mensaje" placeholder="Escribe un mensaje al cliente (pausa el bot 4h)..." required></textarea>
+      <div class="send-row">
+        <span class="hint">Se envía vía whapi como mensaje humano. El bot queda pausado 4 h para que tú manejes la conversación.</span>
+        <button type="submit" class="send-btn">Enviar</button>
+      </div>
+    </form>
   </div>
 </div>
 <script>
