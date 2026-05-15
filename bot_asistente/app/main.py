@@ -36,7 +36,11 @@ from app.equipo.directorio import es_miembro_equipo, es_numero_interno
 from app.flows.conversation import procesar_mensaje_inbound
 from app.flows.equipo import procesar_mensaje_equipo
 from app.logging_setup import log, setup_logging
+from app.whapi.client import enviar_imagen_bytes, enviar_texto
 from app.whapi.parser import MensajeWhapi, parsear_payload
+from sqlalchemy import update as sa_update
+from app.db.models import AlertaFabio
+from datetime import datetime, timezone
 
 settings = get_settings()
 
@@ -352,27 +356,85 @@ def _lock_for_cliente(cliente_id: int) -> asyncio.Lock:
     return lock
 
 
+async def _drain_outbox(outbox: list[dict]) -> None:
+    """Despacha los mensajes encolados por los handlers de tools.
+
+    Se llama DESPUÉS de session.commit() — garantiza consistencia:
+    lo que sale por whapi === lo que quedó persistido en BD. Si una
+    transacción hace rollback, el outbox NO se drena → no hay mensajes
+    huérfanos a Fabio.
+
+    Falla por item no aborta el resto: cada envío se aísla y se loggea.
+    """
+    if not outbox:
+        return
+    alertas_enviadas: list[int] = []
+    for item in outbox:
+        kind = item.get("kind")
+        try:
+            if kind == "text":
+                await enviar_texto(item["to"], item["text"])
+            elif kind == "image_bytes":
+                await enviar_imagen_bytes(
+                    item["to"],
+                    item["data"],
+                    mime=item.get("mime") or "image/jpeg",
+                    caption=item.get("caption"),
+                )
+            else:
+                log.warning("flow.outbox.unknown_kind", kind=kind)
+                continue
+            if item.get("alerta_id"):
+                alertas_enviadas.append(int(item["alerta_id"]))
+        except Exception as e:
+            log.exception("flow.outbox.fail", kind=kind, to=item.get("to"), error=str(e))
+
+    # Marcar alertas como enviadas en una transacción aparte (la del flow ya
+    # cerró). No es crítico si esto falla — solo es metadata para Fabio.
+    if alertas_enviadas:
+        try:
+            async with async_session_factory() as session2:
+                await session2.execute(
+                    sa_update(AlertaFabio)
+                    .where(AlertaFabio.id.in_(alertas_enviadas))
+                    .values(enviado_a_fabio_en=datetime.now(timezone.utc))
+                )
+                await session2.commit()
+        except Exception:
+            log.exception("flow.outbox.mark_alertas_fail", ids=alertas_enviadas)
+
+
 async def _procesar_async(cliente_id: int, cliente_numero: str, msg: MensajeWhapi) -> None:
     """Procesa el mensaje fuera del request — abre su propia session DB.
 
     Toma un lock por cliente_id para serializar los mensajes del mismo
     cliente. Sin esto, dos webhooks concurrentes del mismo cliente pueden
     chocar en Postgres (deadlock) y/o duplicar escalaciones/pedidos.
+
+    Después del commit drena el outbox (mensajes a Fabio/equipo) — patrón
+    outbox para evitar mensajes huérfanos cuando hay rollback.
     """
     lock = _lock_for_cliente(cliente_id)
+    outbox: list[dict] = []
     async with lock:
         async with async_session_factory() as session:
             try:
-                await procesar_mensaje_inbound(
+                outbox = await procesar_mensaje_inbound(
                     session=session,
                     cliente_id=cliente_id,
                     cliente_numero=cliente_numero,
                     msg=msg,
-                )
+                ) or []
                 await session.commit()
             except Exception:
                 await session.rollback()
                 log.exception("background.flow_fail", cliente=cliente_numero)
+                # Importante: NO drenar outbox si hubo rollback — sería
+                # exactamente el bug que el patrón outbox previene.
+                return
+    # Commit OK → ahora sí enviar mensajes al equipo. Fuera del lock para que
+    # no bloquee otros mensajes del mismo cliente mientras hacemos I/O whapi.
+    await _drain_outbox(outbox)
 
 
 async def _procesar_equipo_async(miembro, msg: MensajeWhapi) -> None:

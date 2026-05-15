@@ -52,11 +52,15 @@ async def procesar_mensaje_inbound(
     cliente_id: int,
     cliente_numero: str,
     msg: MensajeWhapi,
-) -> None:
+) -> list[dict]:
     """
     Procesa un mensaje inbound (ya persistido por el webhook) y manda respuesta.
 
-    No devuelve nada — todo el efecto es persistencia + envío de mensajes.
+    Devuelve el **outbox** (lista de mensajes a despachar DESPUÉS del commit).
+    El caller (_procesar_async en main.py) debe llamar `_drain_outbox(outbox)`
+    tras hacer commit exitoso. Esto resuelve el bug de inconsistencia
+    transaccional donde mensajes a Fabio salían antes del commit y, si el
+    commit hacía rollback, quedaban huérfanos.
     """
     contenido_usuario = msg.texto or ""
     if not contenido_usuario.strip():
@@ -67,7 +71,7 @@ async def procesar_mensaje_inbound(
             contenido_usuario = "[El cliente envió una imagen sin texto adjunto.]"
         else:
             log.info("flow.inbound_sin_texto", cliente=cliente_numero, tipo=msg.tipo)
-            return
+            return []
 
     # 1. Sesión + historial (hasta 24h, marcando mensajes >4h con separador)
     sesion = await get_or_create_sesion(session, cliente_id)
@@ -103,7 +107,7 @@ async def procesar_mensaje_inbound(
     # Si es spam, ignoramos
     if intent == "spam":
         log.info("flow.spam_ignorado", cliente=cliente_numero)
-        return
+        return []
 
     # 3. Si el cliente envió imagen, descargarla para pasarla a Claude (multimodal)
     imagen_b64: str | None = None
@@ -190,13 +194,13 @@ async def procesar_mensaje_inbound(
 
     if not texto_final.strip():
         log.warning("flow.respuesta_vacia", cliente=cliente_numero)
-        return
+        return ctx.get("outbox", [])
 
     # 4.5. Strip de emojis (post-proceso barato — política del negocio: cero emojis)
     texto_final = stripear_emojis(texto_final)
     if not texto_final.strip():
         log.warning("flow.respuesta_vacia_post_strip", cliente=cliente_numero)
-        return
+        return ctx.get("outbox", [])
 
     # 4.6. HUMANIZACIÓN — anti-detección de WhatsApp
     if settings.feature_humanizacion:
@@ -229,7 +233,7 @@ async def procesar_mensaje_inbound(
                     "programado_para": apertura.isoformat(),
                 },
             )
-            return
+            return ctx.get("outbox", [])
 
         # Rate limit global
         ok, enviados, limite = await puede_enviar(session)
@@ -250,7 +254,7 @@ async def procesar_mensaje_inbound(
                 modelo=respuesta.modelo,
                 metadata={"no_enviado": True, "razon": "rate_limit"},
             )
-            return
+            return ctx.get("outbox", [])
 
         # Typing indicator + delay realista
         if settings.humanization_typing_indicator:
@@ -266,7 +270,7 @@ async def procesar_mensaje_inbound(
             await enviar_paused(cliente_numero)
     except Exception as e:
         log.exception("flow.enviar_whapi_fail", error=str(e))
-        return
+        return ctx.get("outbox", [])
 
     # 6. Persistir outbound
     await guardar_conversacion(
@@ -292,6 +296,7 @@ async def procesar_mensaje_inbound(
         costo_usd=str(respuesta.costo_usd),
         tools=respuesta.tools_usadas,
     )
+    return ctx.get("outbox", [])
 
 
 async def _validar_y_reescribir_si_necesario(

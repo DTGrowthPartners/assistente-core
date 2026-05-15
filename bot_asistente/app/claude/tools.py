@@ -796,17 +796,21 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
         f"Detalle:\n{args.get('resumen', '')}"
     )
 
-    # Crear alerta + enviar mensaje a Fabio
+    # Crear alerta + encolar envío a Fabio (drenará post-commit).
+    # Antes este envío salía ANTES del commit → si la transacción rollback,
+    # Fabio recibía "PEDIDO NUEVO #X" pero el pedido no quedaba en BD.
     alerta = await registrar_alerta_fabio(
         session, tipo="pedido_confirmado", mensaje=detalle, cliente_id=cliente_id
     )
-    enviado_ok = await _enviar_alerta_a_fabio(alerta, detalle, session)
+    superior = superior_para("pedidos")
+    destino = superior.numero_whatsapp if superior else settings.fabio_phone
+    _enqueue_text(ctx, to=destino, text=detalle, alerta_id=alerta.id)
 
     return {
         "registrado": True,
         "pedido_id": pedido.id,
         "total": str(total),
-        "fabio_notificado": enviado_ok,
+        "fabio_notificado": "encolado (sale después del commit)",
         "info_cliente": "El equipo coordinará el despacho contigo en breve",
     }
 
@@ -893,38 +897,37 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
     if args.get("media_url"):
         mensaje += f"\n\nMedia: {args['media_url']}"
 
-    enviado = False
     imagen_reenviada = False
     if enviar_real:
-        enviado = await _enviar_alerta_a_superior(alerta, mensaje, session, superior.numero_whatsapp)
+        # Encolar el texto al outbox (drenará post-commit, evita inconsistencia
+        # con bug histórico de 2 mensajes "PEDIDO NUEVO" + 1 sola fila en BD).
+        _enqueue_text(ctx, to=superior.numero_whatsapp, text=mensaje, alerta_id=alerta.id)
 
-        # Si el cliente envió imagen en este turno (típicamente comprobante de
-        # pago), la reenviamos al equipo para que la verifique visualmente.
+        # Si el cliente envió imagen en este turno (comprobante de pago / queja),
+        # también encolarla para reenviarla al equipo después del commit.
         inbound_bytes = ctx.get("inbound_imagen_bytes")
         if inbound_bytes and args["tipo"] in ("comprobante_pago", "queja"):
-            try:
-                await enviar_imagen_bytes(
-                    superior.numero_whatsapp,
-                    inbound_bytes,
-                    mime=ctx.get("inbound_imagen_mime") or "image/jpeg",
-                    caption=f"Imagen del cliente {cliente_numero} ({args['tipo']})",
-                )
-                imagen_reenviada = True
-                log.info(
-                    "tools.escalar.imagen_reenviada",
-                    destino=superior.numero_whatsapp,
-                    tipo=args["tipo"],
-                    bytes=len(inbound_bytes),
-                )
-            except Exception as e:
-                log.error("tools.escalar.imagen_fail", error=str(e), tipo=args["tipo"])
+            _enqueue_image_bytes(
+                ctx,
+                to=superior.numero_whatsapp,
+                data=inbound_bytes,
+                mime=ctx.get("inbound_imagen_mime") or "image/jpeg",
+                caption=f"Imagen del cliente {cliente_numero} ({args['tipo']})",
+            )
+            imagen_reenviada = True
+            log.info(
+                "tools.escalar.imagen_encolada",
+                destino=superior.numero_whatsapp,
+                tipo=args["tipo"],
+                bytes=len(inbound_bytes),
+            )
 
     return {
         "escalado": True,
         "tipo": args["tipo"],
         "area": area,
         "responsable": superior.nombre,
-        "notificado_whatsapp": enviado,
+        "notificado_whatsapp": "encolado (sale después del commit)",
         "imagen_reenviada": imagen_reenviada,
     }
 
@@ -964,6 +967,35 @@ async def handler_programar_seguimiento(args: dict, ctx: dict) -> dict:
 # ════════════════════════════════════════════════════════════════════════════
 # HELPERS DE SESIÓN — persistir preferencias del cliente para próximos turnos
 # ════════════════════════════════════════════════════════════════════════════
+
+def _enqueue_text(ctx: dict, *, to: str, text: str, alerta_id: int | None = None) -> None:
+    """Encola un mensaje de texto outbound para drenar DESPUÉS del session.commit().
+
+    Resuelve el bug de inconsistencia transaccional: si entre el flush y el
+    commit hay rollback, los mensajes que YA salieron por whapi quedan
+    huérfanos (Fabio recibe 'PEDIDO NUEVO #X' pero la BD no tiene el pedido).
+    """
+    ctx.setdefault("outbox", []).append({
+        "kind": "text",
+        "to": to,
+        "text": text,
+        "alerta_id": alerta_id,
+    })
+
+
+def _enqueue_image_bytes(
+    ctx: dict, *, to: str, data: bytes, mime: str = "image/jpeg",
+    caption: str | None = None,
+) -> None:
+    """Encola una imagen (bytes) outbound para drenar DESPUÉS del commit."""
+    ctx.setdefault("outbox", []).append({
+        "kind": "image_bytes",
+        "to": to,
+        "data": data,
+        "mime": mime,
+        "caption": caption,
+    })
+
 
 async def _update_sesion(
     session: AsyncSession,
