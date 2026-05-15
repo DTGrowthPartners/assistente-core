@@ -544,10 +544,44 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
       - Inserta en tabla `pedidos` con datos completos
       - Crea alerta para Fabio
       - Envía mensaje real a Fabio (vía whapi)
+
+    Dedupe: si ya hay un pedido reciente (10 min) del mismo cliente con el
+    mismo total, se devuelve ese sin crear duplicado ni re-alertar.
     """
+    from datetime import timedelta
     session: AsyncSession = ctx["session"]
     cliente_id = ctx.get("cliente_id")
     cliente_numero = ctx.get("cliente_numero")
+
+    # Dedupe rápido por (cliente_id, total, ventana 10 min). Evita que dos
+    # turnos consecutivos (ej. cliente reenviando comprobante) generen dos
+    # pedidos idénticos para el equipo.
+    if cliente_id:
+        try:
+            total_arg = Decimal(str(args.get("total") or 0))
+        except Exception:
+            total_arg = Decimal("0")
+        if total_arg > 0:
+            ventana_p = datetime.now(timezone.utc) - timedelta(minutes=10)
+            existente_p = (await session.execute(
+                select(Pedido).where(
+                    Pedido.cliente_id == cliente_id,
+                    Pedido.total == total_arg,
+                    Pedido.created_at >= ventana_p,
+                ).order_by(Pedido.id.desc()).limit(1)
+            )).scalar_one_or_none()
+            if existente_p:
+                log.info(
+                    "tools.tomar_pedido.dedupe_skip",
+                    cliente_id=cliente_id,
+                    pedido_existente_id=existente_p.id,
+                    total=str(total_arg),
+                )
+                return {
+                    "registrado": False,
+                    "razon": "ya existe pedido reciente con el mismo total",
+                    "pedido_existente_id": existente_p.id,
+                }
 
     # Items estructurados (el tool schema los requiere). Construir lista con
     # subtotal calculado a partir de cantidad × precio_unit por seguridad.
@@ -676,7 +710,13 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
     Enrutamiento: usa `area` para encontrar el responsable en data/equipo.yaml.
     Si no hay área o el área no tiene responsable específico, cae al fallback
     (hoy: Fabio).
+
+    Dedupe: si ya hay una alerta abierta del mismo tipo para este cliente en
+    los últimos 5 minutos, NO escala de nuevo. Devuelve la alerta existente.
+    Esto evita spam a Fabio cuando el cliente manda 3 screenshots seguidas
+    del mismo comprobante.
     """
+    from datetime import timedelta
     session: AsyncSession = ctx["session"]
     cliente_id = ctx.get("cliente_id")
     cliente_numero = ctx.get("cliente_numero") or "(número desconocido)"
@@ -686,6 +726,33 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
     cfg = config_escalacion()
     prefijo = cfg.get("prefijo_mensajes_fabio", "[BOT ASISTENTE]")
     enviar_real = cfg.get("enviar_mensaje_real", True)
+
+    # Dedupe: alerta del mismo tipo para este cliente en últimos 5 min,
+    # sin resolver, ya escalada a Fabio
+    if cliente_id:
+        ventana = datetime.now(timezone.utc) - timedelta(minutes=5)
+        existente = (await session.execute(
+            select(AlertaFabio).where(
+                AlertaFabio.cliente_id == cliente_id,
+                AlertaFabio.tipo == args["tipo"],
+                AlertaFabio.resuelto.is_(False),
+                AlertaFabio.created_at >= ventana,
+                AlertaFabio.enviado_a_fabio_en.isnot(None),
+            ).order_by(AlertaFabio.id.desc()).limit(1)
+        )).scalar_one_or_none()
+        if existente:
+            log.info(
+                "tools.escalar.dedupe_skip",
+                cliente_id=cliente_id,
+                tipo=args["tipo"],
+                alerta_existente_id=existente.id,
+            )
+            return {
+                "escalado": False,
+                "razon": "ya existe alerta abierta de este tipo en los últimos 5 minutos",
+                "alerta_existente_id": existente.id,
+                "tipo": args["tipo"],
+            }
 
     alerta = await registrar_alerta_fabio(
         session,
