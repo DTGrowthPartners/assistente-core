@@ -93,6 +93,7 @@ async def procesar_mensaje_inbound(
     # 3. Si el cliente envió imagen, descargarla para pasarla a Claude (multimodal)
     imagen_b64: str | None = None
     imagen_mime: str | None = None
+    imagen_bytes: bytes | None = None  # crudo, para reenvío al equipo (comprobante)
     if msg.tipo in ("imagen",) and msg.media_url:
         try:
             async with httpx.AsyncClient(timeout=30) as c:
@@ -102,6 +103,7 @@ async def procesar_mensaje_inbound(
                     if len(raw) <= 5 * 1024 * 1024:  # max 5MB
                         imagen_b64 = base64.b64encode(raw).decode("ascii")
                         imagen_mime = msg.media_mime or "image/jpeg"
+                        imagen_bytes = raw
                         log.info("flow.imagen.descargada",
                                  cliente=cliente_numero, bytes=len(raw), mime=imagen_mime)
                     else:
@@ -133,6 +135,10 @@ async def procesar_mensaje_inbound(
         "cliente_numero": cliente_numero,
         "intent": intent,
         "productos_mostrados": productos_mostrados_efectivos,
+        # Imagen entrante (bytes + mime) — usada por escalar_a_equipo para
+        # reenviar comprobantes de pago al equipo.
+        "inbound_imagen_bytes": imagen_bytes,
+        "inbound_imagen_mime": imagen_mime,
     }
     respuesta = await conversar(
         historial=historial_claude,

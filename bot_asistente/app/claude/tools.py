@@ -29,7 +29,12 @@ from app.db.repos import registrar_alerta_fabio
 from app.equipo.directorio import config_escalacion, superior_para
 from app.logging_setup import log
 from app.shopify.client import ShopifyError, crear_draft_order as shopify_crear_draft
-from app.whapi.client import enviar_archivo_local, enviar_imagen_url, enviar_texto
+from app.whapi.client import (
+    enviar_archivo_local,
+    enviar_imagen_bytes,
+    enviar_imagen_url,
+    enviar_texto,
+)
 
 settings = get_settings()
 
@@ -704,8 +709,30 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
         mensaje += f"\n\nMedia: {args['media_url']}"
 
     enviado = False
+    imagen_reenviada = False
     if enviar_real:
         enviado = await _enviar_alerta_a_superior(alerta, mensaje, session, superior.numero_whatsapp)
+
+        # Si el cliente envió imagen en este turno (típicamente comprobante de
+        # pago), la reenviamos al equipo para que la verifique visualmente.
+        inbound_bytes = ctx.get("inbound_imagen_bytes")
+        if inbound_bytes and args["tipo"] in ("comprobante_pago", "queja"):
+            try:
+                await enviar_imagen_bytes(
+                    superior.numero_whatsapp,
+                    inbound_bytes,
+                    mime=ctx.get("inbound_imagen_mime") or "image/jpeg",
+                    caption=f"Imagen del cliente {cliente_numero} ({args['tipo']})",
+                )
+                imagen_reenviada = True
+                log.info(
+                    "tools.escalar.imagen_reenviada",
+                    destino=superior.numero_whatsapp,
+                    tipo=args["tipo"],
+                    bytes=len(inbound_bytes),
+                )
+            except Exception as e:
+                log.error("tools.escalar.imagen_fail", error=str(e), tipo=args["tipo"])
 
     return {
         "escalado": True,
@@ -713,6 +740,7 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
         "area": area,
         "responsable": superior.nombre,
         "notificado_whatsapp": enviado,
+        "imagen_reenviada": imagen_reenviada,
     }
 
 

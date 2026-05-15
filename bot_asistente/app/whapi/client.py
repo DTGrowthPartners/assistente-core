@@ -57,6 +57,31 @@ async def enviar_imagen_url(numero: str, image_url: str, caption: str | None = N
         return r.json()
 
 
+async def enviar_imagen_bytes(
+    numero: str,
+    data: bytes,
+    mime: str = "image/jpeg",
+    caption: str | None = None,
+    filename: str = "image.jpg",
+) -> dict[str, Any]:
+    """POST /messages/image multipart con bytes en memoria.
+
+    Útil para reenviar al equipo una imagen recibida de un cliente (ej.
+    comprobante de pago) sin tocar el filesystem.
+    """
+    url = f"{settings.whapi_base_url}/messages/image"
+    async with httpx.AsyncClient(timeout=120) as c:
+        files = {"media": (filename, data, mime)}
+        form: dict[str, Any] = {"to": _to_e164(numero)}
+        if caption:
+            form["caption"] = caption
+        r = await c.post(url, data=form, files=files, headers=_headers())
+        if r.status_code >= 400:
+            log.error("whapi.enviar_imagen_bytes.fail", status=r.status_code, body=r.text[:200])
+            raise WhapiError(f"HTTP {r.status_code}: {r.text[:200]}")
+        return r.json()
+
+
 async def enviar_archivo_local(
     numero: str,
     file_path: str | Path,
