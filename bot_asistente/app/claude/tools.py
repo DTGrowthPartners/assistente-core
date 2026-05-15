@@ -24,7 +24,15 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import AlertaFabio, Cliente, Pedido, ProductoCache, TarifaDomicilio
+from app.db.models import (
+    AlertaFabio,
+    Cliente,
+    Conversacion,
+    Pedido,
+    ProductoCache,
+    Sesion,
+    TarifaDomicilio,
+)
 from app.db.repos import registrar_alerta_fabio
 from app.equipo.directorio import config_escalacion, superior_para
 from app.logging_setup import log
@@ -402,6 +410,42 @@ async def handler_enviar_imagen_producto(args: dict, ctx: dict) -> dict:
     return {"enviado": True, "ref": ref, "caption": caption}
 
 
+_BANCO_PATHS = {
+    "bancolombia": "bancolombia.webp",
+    "davivienda": "davivienda.webp",
+    "bbva": "bbva.webp",
+    "colpatria": "colpatria.webp",
+    "banco_de_bogota": "banco de bogota.webp",
+}
+
+_DATOS_BANCO = {
+    "bancolombia": {
+        "banco": "Bancolombia", "tipo": "Ahorros",
+        "numero": "08500002185", "titular": "Comercializadora Marcas y Estilos",
+        "nit": "900425072",
+    },
+    "davivienda": {
+        "banco": "Davivienda", "tipo": "Ahorros",
+        "numero": "036001083900", "titular": "Luis Tirado", "cc": "9098444",
+    },
+    "bbva": {
+        "banco": "BBVA", "tipo": "Corriente",
+        "numero": "835003732", "titular": "Comercializadora Marcas y Estilos",
+        "nit": "900425072",
+    },
+    "colpatria": {
+        "banco": "Colpatria", "tipo": "Corriente",
+        "numero": "4251012380", "titular": "Comercializadora Marcas y Estilos",
+        "nit": "900425072",
+    },
+    "banco_de_bogota": {
+        "banco": "Banco de Bogotá", "tipo": "Corriente",
+        "numero": "182298868", "titular": "Comercializadora Marcas y Estilos",
+        "nit": "900425072",
+    },
+}
+
+
 async def handler_enviar_imagen_banco(args: dict, ctx: dict) -> dict:
     from datetime import timedelta
     banco = args["banco"]
@@ -409,9 +453,13 @@ async def handler_enviar_imagen_banco(args: dict, ctx: dict) -> dict:
     cliente_id = ctx.get("cliente_id")
     session: AsyncSession = ctx["session"]
 
-    # Dedupe: si ya hay alerta abierta de comprobante_pago para este cliente,
-    # significa que ya pagó — NO le reenvíes los datos del banco.
-    # Si la última vez que enviamos imagen_banco fue hace <5 min, tampoco.
+    archivo = _BANCO_PATHS.get(banco)
+    datos = _DATOS_BANCO.get(banco)
+    if not archivo or not datos:
+        return {"enviado": False, "razon": f"Banco {banco} no reconocido"}
+
+    # Dedupe 1: si ya hay alerta abierta de comprobante_pago, el cliente ya
+    # pagó — NO reenvíes los datos del banco.
     if cliente_id:
         ventana = datetime.now(timezone.utc) - timedelta(minutes=10)
         alerta_pago = (await session.execute(
@@ -431,50 +479,44 @@ async def handler_enviar_imagen_banco(args: dict, ctx: dict) -> dict:
                 "enviado": False,
                 "razon": (
                     "El cliente ya envió comprobante recientemente. "
-                    "NO reenvíes los datos del banco. Avanza con el pedido "
-                    "(toma_pedido_manual / agradece y confirma que el equipo verifica el pago)."
+                    "NO reenvíes los datos del banco. Avanza con el pedido."
                 ),
                 "alerta_existente_id": alerta_pago.id,
             }
 
-    paths = {
-        "bancolombia": "bancolombia.webp",
-        "davivienda": "davivienda.webp",
-        "bbva": "bbva.webp",
-        "colpatria": "colpatria.webp",
-        "banco_de_bogota": "banco de bogota.webp",
-    }
-    # Datos textuales como fallback (cuando la imagen no carga)
-    DATOS_BANCO = {
-        "bancolombia": {
-            "banco": "Bancolombia", "tipo": "Ahorros",
-            "numero": "08500002185", "titular": "Comercializadora Marcas y Estilos",
-            "nit": "900425072",
-        },
-        "davivienda": {
-            "banco": "Davivienda", "tipo": "Ahorros",
-            "numero": "036001083900", "titular": "Luis Tirado", "cc": "9098444",
-        },
-        "bbva": {
-            "banco": "BBVA", "tipo": "Corriente",
-            "numero": "835003732", "titular": "Comercializadora Marcas y Estilos",
-            "nit": "900425072",
-        },
-        "colpatria": {
-            "banco": "Colpatria", "tipo": "Corriente",
-            "numero": "4251012380", "titular": "Comercializadora Marcas y Estilos",
-            "nit": "900425072",
-        },
-        "banco_de_bogota": {
-            "banco": "Banco de Bogotá", "tipo": "Corriente",
-            "numero": "182298868", "titular": "Comercializadora Marcas y Estilos",
-            "nit": "900425072",
-        },
-    }
-    archivo = paths.get(banco)
-    datos = DATOS_BANCO.get(banco)
-    if not archivo or not datos:
-        return {"enviado": False, "razon": f"Banco {banco} no reconocido"}
+        # Dedupe 2: si ya enviamos los datos del banco hace <8 min, NO reenvíes.
+        # Esto evita el loop donde el modelo ante una pregunta de precio
+        # reenvía los datos en lugar de responder con texto.
+        cliente_q = (await session.execute(
+            select(Cliente).where(Cliente.id == cliente_id).limit(1)
+        )).scalar_one_or_none()
+        meta = (cliente_q.metadata_ or {}) if cliente_q else {}
+        ultimo_iso = meta.get(f"last_banco_{banco}_ts")
+        if ultimo_iso:
+            try:
+                ultimo_ts = datetime.fromisoformat(ultimo_iso)
+                if ultimo_ts.tzinfo is None:
+                    ultimo_ts = ultimo_ts.replace(tzinfo=timezone.utc)
+                ventana_banco = datetime.now(timezone.utc) - timedelta(minutes=8)
+                if ultimo_ts >= ventana_banco:
+                    log.info(
+                        "tools.enviar_imagen_banco.dedupe_skip_reciente",
+                        cliente_id=cliente_id,
+                        banco=banco,
+                        ultimo_envio=ultimo_iso,
+                    )
+                    return {
+                        "enviado": False,
+                        "razon": (
+                            f"Ya enviaste los datos de {banco} a este cliente "
+                            f"hace pocos minutos. NO los reenvíes. RESPONDE CON "
+                            f"TEXTO a la pregunta del cliente (cálculo del total, "
+                            f"tiempo de entrega, etc.) usando los datos textuales."
+                        ),
+                        "datos_textuales": datos,
+                    }
+            except Exception:
+                pass
 
     full_path = f"{settings.bancos_dir}/{archivo}"
 
@@ -486,6 +528,17 @@ async def handler_enviar_imagen_banco(args: dict, ctx: dict) -> dict:
             tipo="image",
             caption="Datos para transferencia. Cuando hagas el pago, envíame foto del comprobante.",
         )
+        # Registrar el timestamp del envío en cliente.metadata para que el
+        # dedupe de 8 min funcione en próximos turnos.
+        if cliente_id:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cliente_now = (await session.execute(
+                select(Cliente).where(Cliente.id == cliente_id).limit(1)
+            )).scalar_one_or_none()
+            if cliente_now:
+                new_meta = dict(cliente_now.metadata_ or {})
+                new_meta[f"last_banco_{banco}_ts"] = now_iso
+                cliente_now.metadata_ = new_meta
         return {"enviado": True, "banco": banco, "via": "imagen"}
     except FileNotFoundError:
         log.warning("tools.enviar_imagen_banco.no_archivo", banco=banco, path=full_path)
