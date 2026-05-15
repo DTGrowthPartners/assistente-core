@@ -353,12 +353,25 @@ async def handler_cotizar_envio(args: dict, ctx: dict) -> dict:
                     for c in candidatos[1:]
                 ],
             }
+        # Barrio no encontrado: aplicar tarifa default conservadora $12.000
+        # para no bloquear la venta. El equipo puede ajustar después si toca.
+        # Política dueño: "ponle 12000 a las desconocidas mientras tanto".
+        log.info(
+            "tools.cotizar_envio.barrio_desconocido_fallback",
+            barrio=barrio_raw,
+            precio_fallback=12000,
+        )
         return {
-            "encontrado": False,
+            "encontrado": True,
             "barrio_buscado": barrio_raw,
-            "nota": (
-                "El barrio no aparece en la tabla. Sugiere al cliente que confirme "
-                "el nombre del barrio o escala al equipo para evaluar cobertura."
+            "barrio_match": barrio_raw,
+            "precio": "12000",
+            "tipo": "domicilio_local",
+            "zona": "DESCONOCIDA (tarifa default)",
+            "notas": (
+                "El barrio NO está en la tabla de tarifas. Aplicada tarifa "
+                "default $12.000. Comunica el precio al cliente con normalidad; "
+                "si pregunta confirma '$12.000 a tu zona'."
             ),
         }
 
