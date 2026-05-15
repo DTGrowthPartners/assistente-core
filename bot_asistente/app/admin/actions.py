@@ -7,6 +7,10 @@ Endpoints:
         pero mantiene el registro del cliente. Útil para "empezar limpio"
         sin perder el número.
 
+    POST /admin/actions/cliente/{id}/nuke
+        BORRADO TOTAL: cliente + pedidos + alertas + conversaciones + sesión.
+        Útil cuando SQLAdmin se traba con FK (pedidos.cliente_id_fkey).
+
     POST /admin/actions/cliente/{id}/bloquear
         Marca al cliente como bloqueado=True (el bot no le responde).
 
@@ -26,9 +30,11 @@ from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    AlertaFabio,
     Cliente,
     Conversacion,
     IntervencionHumana,
+    Pedido,
     Sesion,
     WebhookProcesado,
 )
@@ -152,6 +158,110 @@ async def reset_form(cliente_id: int, request: Request):
   <form method="POST" action="/admin/actions/cliente/{cliente_id}/reset">
     <a href="/admin/cliente/details/{cliente_id}" class="btn btn-secondary">Cancelar</a>
     <button type="submit" class="btn btn-danger">Sí, resetear conversación</button>
+  </form>
+</div>
+</body></html>""")
+
+
+@router.post("/cliente/{cliente_id}/nuke")
+async def nuke_cliente(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Borrado TOTAL: cliente + pedidos + alertas + conversaciones + sesión.
+
+    Sortea la FK pedidos.cliente_id_fkey (sin ON DELETE CASCADE) borrando
+    explícitamente las tablas dependientes antes del cliente.
+    """
+    if not _check_auth(request):
+        raise HTTPException(401)
+
+    cliente = (await session.execute(
+        Cliente.__table__.select().where(Cliente.id == cliente_id)
+    )).first()
+    if not cliente:
+        raise HTTPException(404, "Cliente no encontrado")
+
+    numero = cliente.numero_whatsapp
+
+    # Orden importa: alertas (SET NULL) + pedidos (sin cascade) → cliente
+    await session.execute(delete(AlertaFabio).where(AlertaFabio.cliente_id == cliente_id))
+    n_ped = await session.execute(delete(Pedido).where(Pedido.cliente_id == cliente_id))
+    # conversaciones, sesión, intervencion_humana caen por CASCADE al borrar cliente
+    await session.execute(delete(Cliente).where(Cliente.id == cliente_id))
+    await session.commit()
+
+    log.warning(
+        "admin.cliente.nuke",
+        cliente_id=cliente_id,
+        numero=numero,
+        pedidos_borrados=n_ped.rowcount,
+    )
+    return RedirectResponse("/admin/cliente/list?msg=nuke_ok", status_code=303)
+
+
+@router.get("/cliente/{cliente_id}/nuke-form", response_class=HTMLResponse)
+async def nuke_form(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Confirmación destructiva — muestra qué se va a borrar."""
+    if not _check_auth(request):
+        raise HTTPException(401)
+
+    cliente = (await session.execute(
+        Cliente.__table__.select().where(Cliente.id == cliente_id)
+    )).first()
+    if not cliente:
+        raise HTTPException(404, "Cliente no encontrado")
+
+    from sqlalchemy import func, select as sa_select
+    n_pedidos = (await session.execute(
+        sa_select(func.count()).select_from(Pedido).where(Pedido.cliente_id == cliente_id)
+    )).scalar_one()
+    n_conv = (await session.execute(
+        sa_select(func.count()).select_from(Conversacion).where(Conversacion.cliente_id == cliente_id)
+    )).scalar_one()
+    n_alertas = (await session.execute(
+        sa_select(func.count()).select_from(AlertaFabio).where(AlertaFabio.cliente_id == cliente_id)
+    )).scalar_one()
+
+    numero = cliente.numero_whatsapp
+    nombre = cliente.nombre or "(sin nombre)"
+
+    return HTMLResponse(f"""
+<!doctype html><html><head><meta charset="utf-8"><title>Eliminar cliente {cliente_id}</title>
+<style>
+  body {{ font-family: Inter, system-ui, sans-serif; background:#f4f6f9; padding:40px; color:#111827; }}
+  .card {{ background:#fff; max-width:560px; margin:60px auto; padding:32px; border-radius:14px; border:1px solid #e5e7eb; }}
+  h2 {{ margin:0 0 12px 0; font-size:20px; color:#b91c1c; }}
+  p {{ color:#6b7280; line-height:1.6; }}
+  ul {{ background:#fef2f2; border:1px solid #fecaca; border-radius:8px; padding:14px 22px; color:#7f1d1d; }}
+  li {{ margin:4px 0; }}
+  .btn {{ display:inline-block; padding:10px 18px; border-radius:8px; font-weight:600; text-decoration:none; font-size:13px; border:none; cursor:pointer; }}
+  .btn-danger {{ background:#dc2626; color:#fff; }}
+  .btn-secondary {{ background:#fff; border:1.5px solid #e5e7eb; color:#374151; margin-right:8px; }}
+  strong {{ color:#111827; }}
+</style></head>
+<body>
+<div class="card">
+  <h2>⚠ Eliminar cliente #{cliente_id} completamente</h2>
+  <p>Cliente: <strong>{nombre}</strong> · <strong>{numero}</strong></p>
+  <p>Esta acción borra <strong>todo</strong> el rastro de este cliente:</p>
+  <ul>
+    <li><strong>{n_pedidos}</strong> pedido(s) en la tabla pedidos</li>
+    <li><strong>{n_conv}</strong> mensaje(s) de conversación</li>
+    <li><strong>{n_alertas}</strong> alerta(s) a Fabio</li>
+    <li>Sesión activa + cualquier pausa por humano</li>
+    <li>El registro del cliente</li>
+  </ul>
+  <p>Al primer mensaje nuevo, el bot lo tratará como cliente nuevo desde cero.
+  <strong>Esta acción es irreversible.</strong></p>
+  <form method="POST" action="/admin/actions/cliente/{cliente_id}/nuke">
+    <a href="/admin/cliente/details/{cliente_id}" class="btn btn-secondary">Cancelar</a>
+    <button type="submit" class="btn btn-danger">Sí, eliminar cliente completo</button>
   </form>
 </div>
 </body></html>""")

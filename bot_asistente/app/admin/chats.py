@@ -314,6 +314,7 @@ __BASE_STYLES__
     <div class="actions">
       <a href="/admin/cliente/details/{{cliente_id}}">Editar datos</a>
       <a href="/admin/actions/cliente/{{cliente_id}}/reset-form" class="danger">Resetear conversación</a>
+      <a href="/admin/actions/cliente/{{cliente_id}}/nuke-form" class="danger">Eliminar cliente completo</a>
     </div>
   </div>
   <div class="thread">
