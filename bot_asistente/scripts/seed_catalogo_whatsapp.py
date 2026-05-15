@@ -208,6 +208,10 @@ def parsear_cards(html: str) -> list[ProductoCard]:
     cards: list[ProductoCard] = []
     for div in soup.select("div.cwa-card"):
         ref = (div.get("data-ref") or "").strip()
+        # Algunos data-ref vienen con prefijo "REF: " incrustado (caso real:
+        # "REF: SD0017"). Lo limpiamos para que buscar_productos haga match
+        # exacto contra lo que el cliente escribe.
+        ref = re.sub(r"^REF:\s*", "", ref, flags=re.IGNORECASE).strip()
         nombre = (div.get("data-name") or "").strip()
         if not ref or not nombre:
             continue
