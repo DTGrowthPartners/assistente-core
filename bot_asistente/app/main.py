@@ -305,7 +305,7 @@ async def webhook(
                 continue
 
             cliente = await get_or_create_cliente(session, msg.from_number)
-            await pausar_bot(session, cliente.id, horas=4, razon="asesora humana intervino")
+            await pausar_bot(session, cliente.id, horas=1, razon="asesora humana intervino")
             await guardar_conversacion(
                 session,
                 cliente_id=cliente.id,

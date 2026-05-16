@@ -82,7 +82,7 @@ async def bot_pausado(session: AsyncSession, cliente_id: int) -> bool:
 async def pausar_bot(
     session: AsyncSession,
     cliente_id: int,
-    horas: int = 4,
+    horas: int = 1,
     razon: str = "asesora humana intervino",
 ) -> None:
     """Marca el cliente como en intervención humana."""

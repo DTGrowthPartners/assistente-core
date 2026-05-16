@@ -201,9 +201,42 @@ async def chat_cliente(
     total = len(mensajes)
     bloqueado_chip = '<span class="badge badge-blocked">BLOQUEADO</span>' if cliente.bloqueado else ''
 
+    # ¿Bot pausado para este cliente? (intervención humana activa)
+    from sqlalchemy import text as sa_text
+    pausa_row = (await session.execute(sa_text(
+        "SELECT pausado_hasta, razon FROM intervencion_humana "
+        "WHERE cliente_id = :cid AND pausado_hasta > now()"
+    ), {"cid": cliente_id})).first()
+    pausa_banner = ""
+    if pausa_row:
+        from datetime import datetime, timezone
+        ph = pausa_row[0]
+        if ph.tzinfo is None:
+            ph = ph.replace(tzinfo=timezone.utc)
+        minutos_restantes = max(0, int((ph - datetime.now(timezone.utc)).total_seconds() / 60))
+        pausa_banner = f"""
+        <div style="background:var(--accent-negative-bg);border:1px solid var(--accent-negative);
+                    border-radius:8px;padding:10px 14px;margin-bottom:12px;
+                    display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;">
+          <div style="color:var(--accent-negative);">
+            <strong>Laura está pausada en este chat.</strong>
+            Restan ~{minutos_restantes} min. Razón: {html.escape(pausa_row[1] or 'asesora humana intervino')}
+          </div>
+          <form method="POST" action="/admin/actions/cliente/{cliente_id}/reactivar-laura" style="margin:0;">
+            <button type="submit" class="btn-primary" style="background:var(--accent-positive);color:#fff;">
+              Reactivar Laura
+            </button>
+          </form>
+        </div>"""
+
     flash = ""
     if request.query_params.get("msg") == "sent_ok":
-        flash = '<div class="flash">Mensaje enviado al cliente. El bot queda pausado 4 horas.</div>'
+        flash = '<div class="flash">Mensaje enviado. Laura queda pausada 1 hora para que tú manejes la conversación.</div>'
+    elif request.query_params.get("msg") == "reactivado":
+        flash = '<div class="flash">Laura reactivada. Ya responderá al cliente automáticamente.</div>'
+
+    # El pausa banner se inyecta arriba del thread reusando el placeholder de flash
+    flash = pausa_banner + flash
 
     html_resp = (_HILO_TEMPLATE
                  .replace("__SHELL_STYLES__", SHELL_STYLES)
@@ -267,7 +300,7 @@ async def enviar_mensaje_manual(
         contenido=texto,
         metadata={"via": "admin_chats"},
     )
-    await pausar_bot(session, cliente_id, horas=4, razon="enviado desde admin/chats")
+    await pausar_bot(session, cliente_id, horas=1, razon="enviado desde admin/chats")
     await session.commit()
 
     log.info(
@@ -430,9 +463,9 @@ __ICON_SPRITE__
   </div>
   <div class="send-box">
     <form method="POST" action="/admin/chats/cliente/{{cliente_id}}/send">
-      <textarea name="mensaje" placeholder="Escribe un mensaje al cliente (pausa el bot 4h)..." required></textarea>
+      <textarea name="mensaje" placeholder="Escribe un mensaje al cliente (Laura queda pausada 1h)..." required></textarea>
       <div class="send-row">
-        <span class="hint">Se envía vía whapi como mensaje humano. El bot queda pausado 4 h para que tú manejes la conversación.</span>
+        <span class="hint">Se envía vía whapi como mensaje humano. Laura queda pausada 1 h. Si quieres que Laura retome antes, usa el botón "Reactivar Laura" del banner.</span>
         <button type="submit" class="send-btn">Enviar</button>
       </div>
     </form>

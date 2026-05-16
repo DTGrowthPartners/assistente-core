@@ -108,6 +108,27 @@ async def bloquear_cliente(
     return RedirectResponse(f"/admin/cliente/details/{cliente_id}", status_code=303)
 
 
+@router.post("/cliente/{cliente_id}/reactivar-laura")
+async def reactivar_laura(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Quita la pausa de intervención humana para este cliente.
+
+    Útil cuando el operador estaba atendiendo manualmente y decide que
+    Laura retome la conversación sin esperar a que expire la pausa de 1h.
+    """
+    if not _check_auth(request):
+        raise HTTPException(401)
+    await session.execute(sa_text(
+        "DELETE FROM intervencion_humana WHERE cliente_id = :cid"
+    ), {"cid": cliente_id})
+    await session.commit()
+    log.info("admin.cliente.reactivar_laura", cliente_id=cliente_id)
+    return RedirectResponse(f"/admin/chats/{cliente_id}?msg=reactivado", status_code=303)
+
+
 @router.post("/cliente/{cliente_id}/desbloquear")
 async def desbloquear_cliente(
     cliente_id: int,
