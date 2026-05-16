@@ -72,9 +72,11 @@ async def lista_chats(
         .subquery()
     )
 
+    # Inner join: solo clientes que YA tienen al menos un mensaje en `conversaciones`.
+    # Contactos importados (sin conversación) NO aparecen aquí — están en /admin/cliente/list.
     stmt = (
         select(Cliente, subq.c.ultima_ts, subq.c.total_msgs)
-        .join(subq, subq.c.cliente_id == Cliente.id, isouter=True)
+        .join(subq, subq.c.cliente_id == Cliente.id)
         .order_by(desc(subq.c.ultima_ts))
         .limit(200)
     )
@@ -417,7 +419,7 @@ __ICON_SPRITE__
   __SIDEBAR__
   <main class="main">
     <h1 class="page-title">Chats</h1>
-    <p class="page-subtitle">{{total}} conversaciones registradas.</p>
+    <p class="page-subtitle">{{total}} conversaciones activas · Para ver contactos importados sin conversación, abre <a href="/admin/cliente/list" style="color:var(--chip-blue);">Clientes</a>.</p>
     <div class="chat-list">
       {{items}}
     </div>
