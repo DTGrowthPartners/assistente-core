@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Cliente, Conversacion
+from app.db.models import Cliente, Conversacion, EquipoMiembro
 from app.db.repos import guardar_conversacion, pausar_bot
 from app.db.session import get_session
 from app.logging_setup import log
@@ -93,6 +93,11 @@ async def lista_chats(
             preview = (contenido or "[media]")[:80]
             last_msgs[cliente.id] = (direccion, preview)
 
+    # Set de números que son admins (para mostrar badge "ADMIN" en la lista)
+    admins_numeros = set((await session.execute(
+        select(EquipoMiembro.numero_whatsapp).where(EquipoMiembro.activo.is_(True))
+    )).scalars().all())
+
     items_html: list[str] = []
     for cliente, ultima_ts, total_msgs in rows:
         direccion, preview = last_msgs.get(cliente.id, ("", "Sin mensajes"))
@@ -100,13 +105,14 @@ async def lista_chats(
         avatar_initial = (cliente.nombre or cliente.numero_whatsapp or "?")[0].upper()
         nombre_mostrar = cliente.nombre or "(sin nombre)"
         bloqueado_badge = '<span class="badge badge-blocked">bloqueado</span>' if cliente.bloqueado else ''
+        admin_badge = '<span class="badge badge-admin">ADMIN</span>' if cliente.numero_whatsapp in admins_numeros else ''
 
         items_html.append(f"""
         <a href="/admin/chats/{cliente.id}" class="chat-item">
           <div class="avatar">{html.escape(avatar_initial)}</div>
           <div class="chat-body">
             <div class="chat-top">
-              <span class="chat-name">{html.escape(nombre_mostrar)} {bloqueado_badge}</span>
+              <span class="chat-name">{html.escape(nombre_mostrar)} {admin_badge} {bloqueado_badge}</span>
               <span class="chat-time">{_fmt_hora(ultima_ts) if ultima_ts else ''}</span>
             </div>
             <div class="chat-bottom">
@@ -284,6 +290,7 @@ _BASE_STYLES = """
   .container { max-width: 980px; margin: 0 auto; padding: 24px; }
   .badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
   .badge-blocked { background: #fee2e2; color: #991b1b; margin-left: 6px; }
+  .badge-admin { background: #dbeafe; color: #1e40af; margin-left: 6px; }
 </style>
 """
 

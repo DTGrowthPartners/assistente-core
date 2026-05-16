@@ -16,7 +16,7 @@ from decimal import Decimal
 
 import httpx
 from anthropic import AsyncAnthropic
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.claude.prompts import SYSTEM_PROMPT_EQUIPO
@@ -27,6 +27,7 @@ from app.claude.tools_equipo import (
 )
 from app.config import get_settings
 from app.db.models import AlertaFabio, Cliente, Conversacion, Pedido
+from app.db.repos import get_or_create_cliente, guardar_conversacion
 from app.equipo.directorio import Miembro
 from app.logging_setup import log
 from app.validators.output_rules import stripear_emojis
@@ -144,6 +145,28 @@ async def procesar_mensaje_equipo(
 
     log.info("flow_equipo.inbound", miembro=miembro.nombre, preview=instruccion[:100])
 
+    # Persistir el inbound del admin para que aparezca en /admin/chats.
+    # Auto-crea un "cliente" con el número del admin (ya bloqueado por la
+    # lógica de webhook para que no se procese como cliente normal).
+    cliente_proxy = await get_or_create_cliente(session, miembro.numero_whatsapp)
+    if not cliente_proxy.nombre:
+        # Bautizar con el nombre del miembro
+        await session.execute(
+            update(Cliente).where(Cliente.id == cliente_proxy.id).values(
+                nombre=f"[ADMIN] {miembro.nombre}"
+            )
+        )
+    await guardar_conversacion(
+        session,
+        cliente_id=cliente_proxy.id,
+        direccion="inbound",
+        tipo=msg.tipo,
+        contenido=msg.texto,
+        whapi_message_id=msg.id,
+        media_url=msg.media_url,
+        metadata={"es_equipo": True, "miembro": miembro.nombre},
+    )
+
     # Descargar imagen si llegó (multimodal vía visión)
     imagen_b64: str | None = None
     imagen_mime: str | None = None
@@ -248,6 +271,24 @@ async def procesar_mensaje_equipo(
                     await enviar_texto(miembro.numero_whatsapp, texto_final)
                 except Exception as e:
                     log.error("flow_equipo.enviar_confirmacion_fail", error=str(e))
+                # Persistir outbound para que aparezca en /admin/chats
+                try:
+                    await guardar_conversacion(
+                        session,
+                        cliente_id=cliente_proxy.id,
+                        direccion="outbound",
+                        tipo="texto",
+                        contenido=texto_final,
+                        modelo=settings.claude_model_principal,
+                        tokens_input=tokens_in,
+                        tokens_output=tokens_out,
+                        cache_read_tokens=cache_r,
+                        cache_create_tokens=cache_w,
+                        costo_usd=costo,
+                        metadata={"es_equipo": True, "miembro": miembro.nombre, "tools": tools_usadas},
+                    )
+                except Exception as e:
+                    log.warning("flow_equipo.persistir_outbound_fail", error=str(e))
             log.info(
                 "flow_equipo.respondido",
                 miembro=miembro.nombre,

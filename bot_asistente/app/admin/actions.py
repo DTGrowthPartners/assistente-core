@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import delete, update
+from sqlalchemy import delete, text as sa_text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -122,6 +122,35 @@ async def desbloquear_cliente(
     await session.commit()
     log.info("admin.cliente.desbloqueado", cliente_id=cliente_id)
     return RedirectResponse(f"/admin/cliente/details/{cliente_id}", status_code=303)
+
+
+@router.post("/bot/toggle")
+async def toggle_bot(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Invierte el flag bot_estado.activo. Si está activo lo pausa, y viceversa."""
+    if not _check_auth(request):
+        raise HTTPException(401)
+    row = (await session.execute(sa_text(
+        "SELECT activo FROM bot_estado WHERE id=1"
+    ))).first()
+    estaba_activo = bool(row[0]) if row else True
+    nuevo_estado = not estaba_activo
+    if nuevo_estado:
+        await session.execute(sa_text(
+            "UPDATE bot_estado SET activo=true, pausado_por=null, "
+            "pausado_en=null, razon=null, actualizado_en=now() WHERE id=1"
+        ))
+    else:
+        await session.execute(sa_text(
+            "UPDATE bot_estado SET activo=false, pausado_por='dashboard', "
+            "pausado_en=now(), razon='Pausado desde dashboard web', "
+            "actualizado_en=now() WHERE id=1"
+        ))
+    await session.commit()
+    log.warning("admin.bot.toggle", nuevo_estado="activo" if nuevo_estado else "pausado")
+    return RedirectResponse("/admin?msg=bot_toggle", status_code=303)
 
 
 @router.post("/equipo/recargar-cache")

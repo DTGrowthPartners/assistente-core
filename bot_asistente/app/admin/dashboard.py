@@ -150,6 +150,22 @@ async def dashboard_json(
         "top_productos_30d": [{"ref": r, "vendidos": n} for r, n in top_productos],
         "alertas_pendientes": int(alertas_pendientes),
         "catalogo": {"productos_activos": int(productos_total)},
+        "bot_estado": await _bot_estado(session),
+    }
+
+
+async def _bot_estado(session: AsyncSession) -> dict:
+    from sqlalchemy import text as sa_text
+    row = (await session.execute(sa_text(
+        "SELECT activo, pausado_por, pausado_en, razon FROM bot_estado WHERE id=1"
+    ))).first()
+    if not row:
+        return {"activo": True, "pausado_por": None, "pausado_en": None, "razon": None}
+    return {
+        "activo": bool(row[0]),
+        "pausado_por": row[1],
+        "pausado_en": row[2].isoformat() if row[2] else None,
+        "razon": row[3],
     }
 
 
@@ -191,9 +207,12 @@ _TEMPLATE_DASHBOARD = """<!doctype html>
 <body>
 <div class="nav">
   <a href="/admin">← Volver al admin</a>
+  <a href="/admin/chats">Chats</a>
 </div>
 <h1>Dashboard</h1>
 <div class="subtitle" id="hora">Cargando…</div>
+
+<div id="bot-toggle-row" style="margin-bottom: 24px;"></div>
 
 <div class="grid" id="kpis"></div>
 
@@ -209,6 +228,28 @@ const cop = n => '$' + fmt(Math.round(n));
 
 fetch('/admin/dashboard.json').then(r => r.json()).then(d => {
   document.getElementById('hora').textContent = 'Consultado: ' + new Date(d.hora_consulta).toLocaleString('es-CO');
+
+  // Bot toggle (estado actual + formulario para alternar)
+  const est = d.bot_estado || { activo: true };
+  const estadoTxt = est.activo
+    ? '<span style="color:#22c55e">● Bot ACTIVO</span> — Laura responde a clientes'
+    : '<span style="color:#ef4444">● Bot PAUSADO</span> — Laura NO responde'
+      + (est.pausado_por ? ' · pausado por ' + est.pausado_por : '')
+      + (est.razon ? ' · "' + est.razon + '"' : '');
+  const btnTxt = est.activo ? 'Pausar bot' : 'Reactivar bot';
+  const btnColor = est.activo ? '#ef4444' : '#22c55e';
+  document.getElementById('bot-toggle-row').innerHTML = `
+    <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
+      <div style="font-size:14px;">${estadoTxt}</div>
+      <form method="POST" action="/admin/actions/bot/toggle">
+        <button type="submit"
+                style="background:${btnColor};color:#fff;border:none;padding:8px 16px;
+                       border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;">
+          ${btnTxt}
+        </button>
+      </form>
+    </div>`;
+
   const k = document.getElementById('kpis');
   const cards = [
     { t: 'Ventas hoy', v: cop(d.ventas.hoy.total_cop), s: d.ventas.hoy.cantidad + ' pedidos' },
