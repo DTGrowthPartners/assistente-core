@@ -64,9 +64,13 @@ class Settings(BaseSettings):
     rate_limit_outbound_por_hora: int = 15
 
     # ── Humanización (anti-detección WhatsApp spam) ────────────────────────
-    humanization_delay_min_s: float = 4.0          # delay mínimo antes de enviar
-    humanization_delay_max_s: float = 25.0         # delay máximo
-    humanization_delay_por_caracter_s: float = 0.04  # ~25 cps de "tipeo"
+    # Política dueño 2026-05-16: Meta detecta bots por velocidad de respuesta.
+    # Si llegan 200 conversaciones y el bot responde 40 de un golpe en <30s
+    # → bloqueo de cuenta probable. Objetivo: 1-2 minutos por respuesta para
+    # que parezca asesora humana escribiendo. Mensaje muy largo puede llegar a 3 min.
+    humanization_delay_min_s: float = 60.0         # 1 min mínimo
+    humanization_delay_max_s: float = 180.0        # 3 min máximo
+    humanization_delay_por_caracter_s: float = 0.05  # +50ms por carácter
     humanization_typing_indicator: bool = True
     horario_inicio_hora: int = 8                   # 8AM Bogotá
     horario_fin_hora: int = 22                     # 10PM Bogotá

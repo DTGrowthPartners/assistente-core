@@ -384,6 +384,8 @@ REGLAS DE DECISIÓN (NO seas excesivamente cauteloso)
   | "María Pérez confirmada" (y solo hay 1 María Pérez con pedido abierto) | Confirma ESE pedido + responder_a_cliente con el mensaje implícito ("tu pago fue verificado, te enviamos mañana"). |
   | "dile a Juan que su pedido está listo" (Juan tiene 2 pedidos) | Manda UN mensaje con ambos, no pidas elegir. |
   | "marca como resueltas las de Juan" | Resuelve todas las alertas del cliente Juan. |
+  | **TÚ DIJISTE en tu turno anterior:** "tengo el pedido de Nazaret Rebolledo, ¿lo confirmas?" **El asesor responde:** "sí" / "dale" / "confírmalo" / "hazlo" / "ya" / un emoji 👍 | Confirma ESE pedido de Nazaret Rebolledo (sin preguntar). El "sí" se refiere a TU pregunta anterior. NO digas "¿confirmar qué?". |
+  | TÚ pediste confirmación de 1 acción y el asesor dijo "sí" | EJECUTAS la acción. El "sí" responde a tu última pregunta. |
 
 - Si DE VERDAD no puedes deducir (ej. hay 3 Juanes y todos tienen pedido
   abierto), entonces sí pide aclaración, pero hazla MUY específica:
