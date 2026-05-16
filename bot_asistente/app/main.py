@@ -45,6 +45,20 @@ from datetime import datetime, timezone
 settings = get_settings()
 
 
+# Set global de tareas de background (procesamiento de webhook fuera del
+# request). Lo usamos en shutdown para esperar a que terminen las tareas
+# en curso — sin esto, un restart cancela mensajes que están en mitad de
+# la humanización (60-180s delay) y el cliente queda sin respuesta.
+_background_tasks: "set[asyncio.Task]" = set()
+
+
+def _track_task(task: "asyncio.Task") -> "asyncio.Task":
+    """Agrega un task al set y lo limpia al terminar."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
@@ -55,6 +69,19 @@ async def lifespan(app: FastAPI):
         model=settings.claude_model_principal,
     )
     yield
+    # Graceful shutdown: esperar a que los tasks de procesamiento en curso
+    # terminen su humanización + envío antes de matar el proceso.
+    # Timeout 200s = un poco más que el delay máximo de humanización (180s).
+    if _background_tasks:
+        log.info("asistente.shutdown.waiting_tasks", count=len(_background_tasks))
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*_background_tasks, return_exceptions=True),
+                timeout=200,
+            )
+            log.info("asistente.shutdown.tasks_done")
+        except asyncio.TimeoutError:
+            log.warning("asistente.shutdown.tasks_timeout", pendientes=len(_background_tasks))
     await engine.dispose()
     log.info("asistente.shutdown")
 
@@ -233,7 +260,7 @@ async def webhook(
             log.info("webhook.inbound_equipo", miembro=miembro.nombre, from_=msg.from_number)
             resultados.append({"id": msg.id, "status": "team_routed", "miembro": miembro.nombre})
             # Procesar en background con su propia session
-            asyncio.create_task(_procesar_equipo_async(miembro, msg))
+            _track_task(asyncio.create_task(_procesar_equipo_async(miembro, msg)))
             continue
 
         # Número interno NO-miembro (asesoras, bodegas) → ignorar silencioso
@@ -360,7 +387,7 @@ async def webhook(
     # Procesar fuera del request. asyncio.create_task corre en el mismo loop
     # y es más predecible que BackgroundTasks de FastAPI.
     for cliente_id, cliente_numero, msg in para_procesar:
-        asyncio.create_task(_procesar_async(cliente_id, cliente_numero, msg))
+        _track_task(asyncio.create_task(_procesar_async(cliente_id, cliente_numero, msg)))
 
     return {"status": "ok", "procesados": resultados}
 
