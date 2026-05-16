@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin._shell import ICON_SPRITE, SHELL_STYLES, THEME_TOGGLE_JS, sidebar_html
 from app.db.models import Cliente, Conversacion, EquipoMiembro
 from app.db.repos import guardar_conversacion, pausar_bot
 from app.db.session import get_session
@@ -125,7 +126,11 @@ async def lista_chats(
         """)
 
     html_resp = (_LISTA_TEMPLATE
-                 .replace("__BASE_STYLES__", _BASE_STYLES)
+                 .replace("__SHELL_STYLES__", SHELL_STYLES)
+                 .replace("__EXTRA_STYLES__", _CHATS_EXTRA_STYLES)
+                 .replace("__ICON_SPRITE__", ICON_SPRITE)
+                 .replace("__SIDEBAR__", sidebar_html(active="chats"))
+                 .replace("__THEME_JS__", THEME_TOGGLE_JS)
                  .replace("{{total}}", str(len(rows)))
                  .replace("{{items}}", "".join(items_html)))
     return HTMLResponse(html_resp)
@@ -200,7 +205,12 @@ async def chat_cliente(
     if request.query_params.get("msg") == "sent_ok":
         flash = '<div class="flash">Mensaje enviado al cliente. El bot queda pausado 4 horas.</div>'
 
-    html_resp = _HILO_TEMPLATE.replace("__BASE_STYLES__", _BASE_STYLES)
+    html_resp = (_HILO_TEMPLATE
+                 .replace("__SHELL_STYLES__", SHELL_STYLES)
+                 .replace("__EXTRA_STYLES__", _CHATS_EXTRA_STYLES)
+                 .replace("__ICON_SPRITE__", ICON_SPRITE)
+                 .replace("__SIDEBAR__", sidebar_html(active="chats"))
+                 .replace("__THEME_JS__", THEME_TOGGLE_JS))
     repls = {
         "{{nombre}}": html.escape(nombre),
         "{{numero}}": html.escape(cliente.numero_whatsapp),
@@ -210,7 +220,7 @@ async def chat_cliente(
         "{{barrio}}": html.escape(cliente.barrio or "—"),
         "{{ultimo_contacto}}": _fmt_fecha(cliente.ultimo_contacto),
         "{{bloqueado_chip}}": bloqueado_chip,
-        "{{burbujas}}": "".join(burbujas) or '<p style="text-align:center;color:#9ca3af;">Sin mensajes.</p>',
+        "{{burbujas}}": "".join(burbujas) or '<p style="text-align:center;color:var(--text-tertiary);">Sin mensajes.</p>',
         "{{flash}}": flash,
     }
     for k, v in repls.items():
@@ -274,82 +284,61 @@ async def enviar_mensaje_manual(
 # ────────────────────────────────────────────────────────────────────────────
 
 
-_BASE_STYLES = """
+_CHATS_EXTRA_STYLES = """
 <style>
-  :root {
-    --bg: #f4f6f9; --surface: #ffffff; --border: #e5e7eb;
-    --text: #111827; --muted: #6b7280; --soft: #f3f4f6;
-    --link: #1d4ed8; --link-bg: #eff6ff;
-    --green: #d1fae5; --green-dark: #065f46;
-  }
-  * { box-sizing: border-box; }
-  body { background: var(--bg); margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; color: var(--text); }
-  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
-  .topbar a { color: var(--link); text-decoration: none; font-size: 13px; font-weight: 500; }
-  .topbar h1 { font-size: 18px; font-weight: 700; margin: 0; }
-  .container { max-width: 980px; margin: 0 auto; padding: 24px; }
-  .badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
-  .badge-blocked { background: #fee2e2; color: #991b1b; margin-left: 6px; }
-  .badge-admin { background: #dbeafe; color: #1e40af; margin-left: 6px; }
-</style>
-"""
+  .page-title { font-size: 22px; font-weight: 600; margin: 0 0 4px; color: var(--text-primary); }
+  .page-subtitle { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; }
 
-_LISTA_TEMPLATE = """<!doctype html>
-<html><head><meta charset="utf-8"><title>Chats — Asistente</title>
-__BASE_STYLES__
-<style>
-  .chat-list { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .chat-list { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow-card); }
   .chat-item {
     display: flex; align-items: center; gap: 14px; padding: 14px 18px;
-    border-bottom: 1px solid var(--soft); text-decoration: none; color: inherit;
+    border-bottom: 1px solid var(--border-subtle); text-decoration: none; color: inherit;
     transition: background 0.15s;
   }
-  .chat-item:hover { background: #f9fafb; }
+  .chat-item:hover { background: var(--bg-soft); }
   .chat-item:last-child { border-bottom: none; }
   .avatar {
-    width: 42px; height: 42px; border-radius: 50%; background: var(--link-bg);
-    color: var(--link); display: flex; align-items: center; justify-content: center;
+    width: 42px; height: 42px; border-radius: 50%;
+    background: var(--chip-blue-bg); color: var(--chip-blue);
+    display: flex; align-items: center; justify-content: center;
     font-weight: 600; font-size: 16px; flex-shrink: 0;
   }
   .chat-body { flex: 1; min-width: 0; }
   .chat-top { display: flex; justify-content: space-between; align-items: baseline; }
-  .chat-name { font-weight: 600; font-size: 14px; color: var(--text); }
-  .chat-time { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+  .chat-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
+  .chat-time { font-size: 11px; color: var(--text-tertiary); flex-shrink: 0; }
   .chat-bottom { display: flex; justify-content: space-between; margin-top: 2px; }
-  .chat-preview { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
-  .chat-count { background: var(--green); color: var(--green-dark); font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px; }
-  .chat-meta { font-size: 11px; color: #9ca3af; margin-top: 2px; font-family: 'Inter', monospace; }
-  .stats { margin-bottom: 12px; font-size: 13px; color: var(--muted); }
-</style>
-</head><body>
-<div class="topbar">
-  <a href="/admin">← Volver al admin</a>
-  <h1>Chats</h1>
-</div>
-<div class="container">
-  <p class="stats">{{total}} clientes con conversación.</p>
-  <div class="chat-list">
-    {{items}}
-  </div>
-</div>
-</body></html>"""
+  .chat-preview { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
+  .chat-count {
+    background: var(--chip-green-bg); color: var(--chip-green);
+    font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+  }
+  .chat-meta { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
 
-_HILO_TEMPLATE = """<!doctype html>
-<html><head><meta charset="utf-8"><title>Chat — {{numero}}</title>
-__BASE_STYLES__
-<style>
-  .header-info { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; margin-bottom: 16px; }
-  .header-info .name { font-weight: 700; font-size: 18px; }
-  .header-info .meta-row { display: flex; gap: 24px; margin-top: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
-  .header-info .meta-row strong { color: var(--text); font-weight: 500; }
-  .actions { margin-top: 12px; display: flex; gap: 8px; }
-  .actions a { display: inline-block; padding: 6px 12px; border-radius: 8px; text-decoration: none;
-              font-size: 12px; font-weight: 500; background: var(--link-bg); color: var(--link); }
-  .actions a.danger { background: #fef2f2; color: #dc2626; }
+  /* Hilo (vista detalle de chat) */
+  .header-info { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; margin-bottom: 16px; box-shadow: var(--shadow-card); }
+  .header-info .name { font-weight: 700; font-size: 18px; color: var(--text-primary); }
+  .header-info .meta-row { display: flex; gap: 24px; margin-top: 8px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
+  .header-info .meta-row strong { color: var(--text-primary); font-weight: 500; }
+  .actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .actions a {
+    display: inline-block; padding: 6px 12px; border-radius: 8px; text-decoration: none;
+    font-size: 12px; font-weight: 500; background: var(--chip-blue-bg); color: var(--chip-blue);
+  }
+  .actions a.danger { background: var(--accent-negative-bg); color: var(--accent-negative); }
 
-  .thread { background: #e7eaf0; border-radius: 12px; padding: 18px 14px; min-height: 400px; max-height: 75vh; overflow-y: auto; }
-  .date-sep { text-align: center; font-size: 11px; color: var(--muted); background: #fff; display: inline-block;
-              padding: 3px 14px; border-radius: 999px; margin: 14px auto 6px; left: 50%; position: relative; transform: translateX(-50%); }
+  .thread {
+    background: var(--bg-soft); border-radius: 12px; padding: 18px 14px;
+    min-height: 400px; max-height: 70vh; overflow-y: auto;
+    border: 1px solid var(--border);
+  }
+  .date-sep {
+    text-align: center; font-size: 11px; color: var(--text-tertiary);
+    background: var(--bg-card); display: inline-block;
+    padding: 3px 14px; border-radius: 999px; margin: 14px auto 6px;
+    left: 50%; position: relative; transform: translateX(-50%);
+    border: 1px solid var(--border-subtle);
+  }
   .msg { margin: 8px 0; display: flex; flex-direction: column; max-width: 75%; }
   .msg-in { align-items: flex-start; margin-right: auto; }
   .msg-out { align-items: flex-end; margin-left: auto; }
@@ -357,25 +346,69 @@ __BASE_STYLES__
     padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.45;
     word-wrap: break-word; white-space: pre-wrap;
   }
-  .msg-in .msg-bubble { background: #ffffff; color: var(--text); border-bottom-left-radius: 4px; }
-  .msg-out .msg-bubble { background: #dcf8c6; color: #111827; border-bottom-right-radius: 4px; }
-  .msg-meta { font-size: 10px; color: var(--muted); margin-top: 3px; padding: 0 4px; }
-  .msg-author { font-size: 10px; color: #8a8f99; font-style: italic; margin-bottom: 2px; padding: 0 4px; }
+  .msg-in .msg-bubble { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg-out .msg-bubble { background: var(--chip-green-bg); color: var(--text-primary); border: 1px solid var(--chip-green-bg); border-bottom-right-radius: 4px; }
+  .msg-meta { font-size: 10px; color: var(--text-tertiary); margin-top: 3px; padding: 0 4px; }
+  .msg-author { font-size: 10px; color: var(--text-tertiary); font-style: italic; margin-bottom: 2px; padding: 0 4px; }
 
-  .send-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-top: 14px; }
-  .send-box textarea { width: 100%; min-height: 60px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font: inherit; font-size: 13px; box-sizing: border-box; }
+  .send-box { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-top: 14px; box-shadow: var(--shadow-card); }
+  .send-box textarea {
+    width: 100%; min-height: 60px; resize: vertical;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font: inherit; font-size: 13px;
+    background: var(--bg-card); color: var(--text-primary);
+    box-sizing: border-box;
+  }
   .send-box .send-row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px; }
-  .send-box .hint { font-size: 11px; color: var(--muted); flex: 1; }
-  .send-btn { background: #10b981; color: #fff; border: none; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
-  .send-btn:hover { background: #059669; }
-  .flash { background: #ecfdf5; color: #065f46; border: 1px solid #6ee7b7; padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; }
+  .send-box .hint { font-size: 11px; color: var(--text-tertiary); flex: 1; }
+  .send-btn { background: var(--accent-positive); color: #fff; border: none; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .send-btn:hover { opacity: .9; }
+  .flash {
+    background: var(--accent-positive-bg); color: var(--accent-positive);
+    border: 1px solid var(--accent-positive); padding: 8px 12px;
+    border-radius: 8px; font-size: 13px; margin-bottom: 12px;
+  }
+  .stats { margin-bottom: 12px; font-size: 13px; color: var(--text-secondary); }
 </style>
+"""
+
+_LISTA_TEMPLATE = """<!doctype html>
+<html lang="es" data-theme="light"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chats — Laura</title>
+__SHELL_STYLES__
+__EXTRA_STYLES__
 </head><body>
-<div class="topbar">
-  <a href="/admin/chats">← Chats</a>
-  <h1>{{nombre}}</h1>
+__ICON_SPRITE__
+<div class="app">
+  __SIDEBAR__
+  <main class="main">
+    <h1 class="page-title">Chats</h1>
+    <p class="page-subtitle">{{total}} conversaciones registradas.</p>
+    <div class="chat-list">
+      {{items}}
+    </div>
+  </main>
 </div>
-<div class="container">
+__THEME_JS__
+</body></html>"""
+
+_HILO_TEMPLATE = """<!doctype html>
+<html lang="es" data-theme="light"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat — {{numero}}</title>
+__SHELL_STYLES__
+__EXTRA_STYLES__
+</head><body>
+__ICON_SPRITE__
+<div class="app">
+  __SIDEBAR__
+  <main class="main">
+    <div style="margin-bottom: 16px;">
+      <a href="/admin/chats" class="btn-ghost">
+        <svg class="ico" width="12" height="12"><use href="#i-back"/></svg> Chats
+      </a>
+    </div>
   <div class="header-info">
     <div class="name">{{nombre}} {{bloqueado_chip}}</div>
     <div class="meta-row">
@@ -404,7 +437,9 @@ __BASE_STYLES__
       </div>
     </form>
   </div>
+  </main>
 </div>
+__THEME_JS__
 <script>
   // Scroll al final del hilo
   const t = document.querySelector('.thread');

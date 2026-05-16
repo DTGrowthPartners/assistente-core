@@ -102,8 +102,15 @@ _ADMIN_CSS_INJECT = (
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
     '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
     '<link rel="stylesheet" href="/admin-static/custom.css">'
-    # JS: agrega un link "Chats" y "Dashboard" al sidebar de SQLAdmin
+    # JS: agrega un link "Chats" y "Dashboard" al sidebar de SQLAdmin +
+    # auto-redirige a /admin/dashboard cuando el usuario aterriza en la
+    # raíz /admin/ tras hacer login.
     '<script>'
+    '(function(){'
+    '  // Auto-redirect: si estamos en /admin/ exacto (home de SQLAdmin) → ir al dashboard.'
+    '  var p = location.pathname.replace(/\\/$/, "");'
+    '  if (p === "/admin") { location.replace("/admin/dashboard"); return; }'
+    '})();'
     'document.addEventListener("DOMContentLoaded", function() {'
     '  const sidebar = document.querySelector(".navbar-nav") || document.querySelector(".sidebar-nav");'
     '  if (!sidebar) return;'

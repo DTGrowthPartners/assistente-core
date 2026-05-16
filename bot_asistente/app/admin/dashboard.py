@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin._shell import ICON_SPRITE, SHELL_STYLES, THEME_TOGGLE_JS, sidebar_html
 from app.db.models import (
     AlertaFabio,
     Cliente,
@@ -39,8 +40,11 @@ async def dashboard_json(
     hace_7d = ahora - timedelta(days=7)
     hace_30d = ahora - timedelta(days=30)
 
-    # Ventas (pedidos en estado confirmado, despachado, entregado)
-    estados_venta = ("confirmado", "despachado", "entregado")
+    # Ventas: contamos TODOS los pedidos excepto cancelados (incluye
+    # 'datos_completos' que es el estado típico de contraentregas o pedidos
+    # recién tomados pero aún no pagados).
+    estados_venta = ("datos_completos", "esperando_pago", "comprobante_recibido",
+                     "confirmado", "despachado", "entregado")
 
     ventas_hoy = (await session.execute(
         select(func.coalesce(func.sum(Pedido.total), 0), func.count())
@@ -321,15 +325,16 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
     background: var(--chip-orange-bg); color: var(--chip-orange);
     display: grid; place-items: center; font-weight: 700; font-size: 14px;
   }
-  .brand-name { font-weight: 600; font-size: 14px; }
+  .brand-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
   .brand-menu { margin-left: auto; color: var(--text-tertiary); cursor: pointer; }
 
   .new-btn {
+    display: block;
     width: 100%; padding: 9px 12px; margin: 4px 0 16px;
     background: var(--bg-card); border: 1px solid var(--border);
-    color: var(--text-primary); border-radius: 8px;
+    color: var(--text-primary) !important; border-radius: 8px;
     font: inherit; font-weight: 500; font-size: 13px;
-    cursor: pointer; text-align: left;
+    cursor: pointer; text-align: left; text-decoration: none;
     box-shadow: var(--shadow-card);
   }
   .new-btn:hover { background: var(--bg-soft); }
@@ -456,7 +461,9 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
   .kpi-top { display: flex; align-items: center; gap: 10px; }
   .kpi-top .label { font-size: 13px; color: var(--text-secondary); flex: 1; }
   .kpi-top .menu  { color: var(--text-tertiary); cursor: pointer; font-size: 16px; line-height: 1; }
-  .kpi-value { font-size: 30px; font-weight: 700; margin: 12px 0 8px; letter-spacing: -.5px; }
+  .kpi-value { font-size: 30px; font-weight: 700; margin: 12px 0 8px; letter-spacing: -.5px; color: var(--text-primary); }
+  .card-title { color: var(--text-primary); }
+  .page-title { color: var(--text-primary); }
   .kpi-foot  { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
   .kpi-foot .vs { color: var(--text-tertiary); }
   .delta { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
@@ -681,11 +688,12 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
 
 <script>
 // ============ Theme toggle ============
+// Default = light. Solo aplica dark si el user lo eligió explícitamente.
+// No respetamos prefers-color-scheme automáticamente para evitar mezclas
+// extrañas cuando algunos elementos no heredan las vars correctamente.
 (function(){
   const saved = localStorage.getItem('theme');
-  if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-    document.documentElement.setAttribute('data-theme', 'dark');
-  }
+  document.documentElement.setAttribute('data-theme', saved === 'dark' ? 'dark' : 'light');
   document.getElementById('theme-toggle').addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme') || 'light';
     const nxt = cur === 'dark' ? 'light' : 'dark';
