@@ -175,8 +175,18 @@ _ADMIN_CSS_INJECT = (
 
 class AdminCSSInjector(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        response = await call_next(request)
         path = request.url.path
+        # Redirect server-side: /admin o /admin/ → /admin/dashboard.
+        # Más confiable que el JS porque el response de SQLAdmin para /admin
+        # a veces no incluye contenido (sale en blanco).
+        if path in ("/admin", "/admin/"):
+            # Solo redirigir si está autenticado (si no, dejar que SQLAdmin
+            # haga su flow de login)
+            if "admin_token" in request.session:
+                from starlette.responses import RedirectResponse
+                return RedirectResponse(url="/admin/dashboard", status_code=303)
+
+        response = await call_next(request)
         if not path.startswith("/admin") or path.startswith("/admin-static"):
             return response
         ct = response.headers.get("content-type", "")
