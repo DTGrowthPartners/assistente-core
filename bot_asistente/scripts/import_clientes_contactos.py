@@ -196,7 +196,7 @@ def upsert(contactos: list[tuple[str, str]], dsn: str, dry_run: bool = False) ->
     try:
         with conn.cursor() as cur:
             # Batch upsert: insertar si no existe; si existe pero nombre vacío, completar.
-            execute_values(
+            filas = execute_values(
                 cur,
                 """
                 INSERT INTO clientes (numero_whatsapp, nombre, primer_contacto, ultimo_contacto)
@@ -206,10 +206,12 @@ def upsert(contactos: list[tuple[str, str]], dsn: str, dry_run: bool = False) ->
                   WHERE COALESCE(NULLIF(clientes.nombre, ''), '') = ''
                 RETURNING (xmax = 0) AS inserted, id
                 """,
-                [(n, nom or None, "now()", "now()") for n, nom in contactos],
+                [(n, nom or None) for n, nom in contactos],
                 template="(%s, %s, now(), now())",
+                page_size=500,
+                fetch=True,
             )
-            for inserted, _id in cur.fetchall():
+            for inserted, _id in filas:
                 if inserted:
                     insertados += 1
                 else:
