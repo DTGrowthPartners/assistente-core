@@ -328,15 +328,46 @@ async def handler_cotizar_envio(args: dict, ctx: dict) -> dict:
     stmt = select(TarifaDomicilio).where(TarifaDomicilio.barrio_normalizado == barrio_norm)
     tarifa = (await session.execute(stmt)).scalar_one_or_none()
 
-    # Fuzzy si no hay exact match
+    # Fuzzy si no hay exact match. Buscamos también por ILIKE substring para
+    # capturar casos tipo "Olaya" → "Olaya Herrera - Sector X". Limitamos a 15.
     if not tarifa:
+        from sqlalchemy import or_ as sa_or
         stmt = (
             select(TarifaDomicilio)
-            .where(TarifaDomicilio.barrio_normalizado.op("%")(barrio_norm))
-            .limit(3)
+            .where(
+                sa_or(
+                    TarifaDomicilio.barrio_normalizado.op("%")(barrio_norm),
+                    TarifaDomicilio.barrio_normalizado.ilike(f"%{barrio_norm}%"),
+                )
+            )
+            .limit(15)
         )
         candidatos = (await session.execute(stmt)).scalars().all()
         if candidatos:
+            # ¿Todos los candidatos tienen el MISMO precio? Si sí, cotizar
+            # directo sin pedirle al modelo que pregunte cuál sector — la
+            # tarifa es la misma. Caso real Olaya Herrera: 13 sectores
+            # todos a $6.000. NO interrogar al cliente sobre sector si
+            # cobramos lo mismo.
+            precios_unicos = {c.precio for c in candidatos if c.precio is not None}
+            if len(precios_unicos) == 1:
+                t = candidatos[0]
+                return {
+                    "encontrado": True,
+                    "barrio_buscado": barrio_raw,
+                    "barrio_match": t.barrio,
+                    "precio": str(t.precio),
+                    "tipo": t.tipo,
+                    "zona": t.zona,
+                    "nota": (
+                        f"'{barrio_raw}' tiene {len(candidatos)} sectores en "
+                        f"nuestra tabla y TODOS valen ${int(t.precio):,}. "
+                        f"Cotiza directo SIN preguntar al cliente cuál sector. "
+                        f"Si necesitas la dirección exacta para el domiciliario, "
+                        f"pídela pero NO bloquees la cotización por eso."
+                    ).replace(",", "."),
+                }
+            # Precios distintos → necesita aclaración del cliente.
             tarifa = candidatos[0]
             return {
                 "encontrado": True,
@@ -346,7 +377,8 @@ async def handler_cotizar_envio(args: dict, ctx: dict) -> dict:
                 "tipo": tarifa.tipo,
                 "nota": (
                     f"Match aproximado de '{barrio_raw}' a '{tarifa.barrio}'. "
-                    "Confirma con el cliente si es la zona correcta antes de cotizar."
+                    f"Hay {len(candidatos)} candidatos con tarifas distintas; "
+                    "confirma con el cliente cuál es exactamente antes de cotizar."
                 ),
                 "alternativas": [
                     {"barrio": c.barrio, "precio": str(c.precio) if c.precio else None}
