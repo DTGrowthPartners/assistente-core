@@ -1,17 +1,31 @@
 /* ============================================================================
-   Asistente Admin — estilos custom (basados en diseno.md, estilo Tabler clean)
-   Se carga sobre SQLAdmin para darle apariencia moderna y limpia.
+   Asistente Admin — estilos custom shadcn-inspired
+   Se carga sobre SQLAdmin para darle apariencia moderna consistente con
+   /admin/dashboard y /admin/chats.
    ========================================================================== */
 
 :root {
-  --color-bg: #f4f6f9;
-  --color-surface: #ffffff;
-  --color-border: #e5e7eb;
-  --color-border-soft: #f3f4f6;
-  --color-text-primary: #111827;
+  /* ── Vars shadcn (compartidas con dashboard) ────────────────────────── */
+  --bg-canvas: #F7F7F8;
+  --bg-card: #FFFFFF;
+  --border: #EAEAEC;
+  --border-subtle: #F0F0F1;
+  --text-primary: #1A1A1A;
+  --text-secondary: #6B7280;
+  --text-tertiary: #9CA3AF;
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.04);
+  --chip-orange: #EA580C;
+  --chip-orange-bg: rgba(234,88,12,.12);
+
+  /* ── Vars legacy de Tabler (mantengo para no romper estilos abajo) ── */
+  --color-bg: var(--bg-canvas);
+  --color-surface: var(--bg-card);
+  --color-border: var(--border);
+  --color-border-soft: var(--border-subtle);
+  --color-text-primary: var(--text-primary);
   --color-text-secondary: #374151;
-  --color-text-muted: #6b7280;
-  --color-text-disabled: #9ca3af;
+  --color-text-muted: var(--text-secondary);
+  --color-text-disabled: var(--text-tertiary);
   --color-brand: #111827;
   --color-link: #1d4ed8;
   --color-link-soft: #eff6ff;
@@ -24,6 +38,76 @@
   --color-danger-bg: #fef2f2;
   --sidebar-bg: #1a1f2e;
 }
+
+[data-theme="dark"] {
+  --bg-canvas: #09090B;
+  --bg-card: #18181B;
+  --border: #27272A;
+  --border-subtle: #1F1F23;
+  --text-primary: #FAFAFA;
+  --text-secondary: #A1A1AA;
+  --text-tertiary: #71717A;
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.3);
+  --color-bg: #09090B;
+  --color-surface: #18181B;
+  --color-border: #27272A;
+  --color-text-primary: #FAFAFA;
+  --color-text-muted: #A1A1AA;
+}
+
+/* ── Custom header sticky (inyectado por JS en TODAS las páginas admin) ── */
+#custom-admin-header {
+  position: sticky; top: 0; z-index: 1000;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
+  padding: 10px 24px;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+#custom-admin-header .cah-inner {
+  display: flex; align-items: center; gap: 24px;
+  max-width: 1400px; margin: 0 auto;
+}
+#custom-admin-header .cah-brand {
+  display: flex; align-items: center; gap: 10px;
+  text-decoration: none; color: var(--text-primary);
+}
+#custom-admin-header .cah-logo {
+  width: 28px; height: 28px; border-radius: 6px;
+  background: var(--chip-orange-bg); color: var(--chip-orange);
+  display: grid; place-items: center; font-weight: 700; font-size: 13px;
+}
+#custom-admin-header .cah-name {
+  font-weight: 600; font-size: 13.5px; color: var(--text-primary);
+}
+#custom-admin-header .cah-nav {
+  display: flex; gap: 4px; flex: 1;
+}
+#custom-admin-header .cah-nav a {
+  padding: 6px 12px; border-radius: 8px;
+  text-decoration: none; color: var(--text-secondary);
+  font-size: 13px; font-weight: 500;
+}
+#custom-admin-header .cah-nav a:hover { background: var(--border-subtle); color: var(--text-primary); }
+#custom-admin-header .cah-btn {
+  padding: 6px 12px; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text-primary); font-size: 12.5px; font-weight: 500;
+  cursor: pointer; font-family: inherit;
+}
+#custom-admin-header .cah-btn:hover { background: var(--border-subtle); }
+
+/* En modo dark, ajustar también los elementos de SQLAdmin a oscuro */
+[data-theme="dark"] body, [data-theme="dark"] .page-wrapper { background: var(--bg-canvas) !important; }
+[data-theme="dark"] .card, [data-theme="dark"] .table, [data-theme="dark"] .form-control,
+[data-theme="dark"] .sidebar-content, [data-theme="dark"] .navbar {
+  background: var(--bg-card) !important; color: var(--text-primary) !important;
+  border-color: var(--border) !important;
+}
+[data-theme="dark"] .table th, [data-theme="dark"] .table td {
+  background: var(--bg-card) !important; color: var(--text-primary) !important;
+  border-color: var(--border-subtle) !important;
+}
+[data-theme="dark"] a { color: #60A5FA; }
 
 /* ── Reset general ─────────────────────────────────────────────────────── */
 
