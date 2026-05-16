@@ -177,12 +177,12 @@ class AdminCSSInjector(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path
         # Redirect server-side: /admin o /admin/ → /admin/dashboard.
-        # Más confiable que el JS porque el response de SQLAdmin para /admin
-        # a veces no incluye contenido (sale en blanco).
+        # Si hay cookie 'session' (sessión activa), asumimos autenticado y
+        # redirigimos. Si no, dejamos pasar para que SQLAdmin muestre login.
+        # No accedemos request.session aquí porque SessionMiddleware todavía
+        # no procesó la cookie (corre DESPUÉS).
         if path in ("/admin", "/admin/"):
-            # Solo redirigir si está autenticado (si no, dejar que SQLAdmin
-            # haga su flow de login)
-            if "admin_token" in request.session:
+            if request.cookies.get("session"):
                 from starlette.responses import RedirectResponse
                 return RedirectResponse(url="/admin/dashboard", status_code=303)
 

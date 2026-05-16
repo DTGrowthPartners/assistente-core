@@ -424,6 +424,10 @@ __ICON_SPRITE__
   </main>
 </div>
 __THEME_JS__
+<script>
+  // Auto-refresh cada 15s para ver chats nuevos
+  setTimeout(function(){ location.reload(); }, 15000);
+</script>
 </body></html>"""
 
 _HILO_TEMPLATE = """<!doctype html>
@@ -477,5 +481,8 @@ __THEME_JS__
   // Scroll al final del hilo
   const t = document.querySelector('.thread');
   if (t) t.scrollTop = t.scrollHeight;
+  // Auto-refresh cada 12s para ver mensajes nuevos del cliente y respuestas
+  // del bot que llegan después de la humanización (60-180s).
+  setTimeout(function(){ location.reload(); }, 12000);
 </script>
 </body></html>"""
