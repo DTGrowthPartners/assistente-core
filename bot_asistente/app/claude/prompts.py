@@ -124,8 +124,18 @@ CUÁNDO REGISTRAR EL PEDIDO EN SISTEMA — tool `tomar_pedido_manual`
 - **Lo llamas TAN PRONTO TENGAS** los datos completos del pedido:
     * Productos elegidos (ref + talla + cantidad + precio_unitario)
     * Nombre del cliente
+    * **Cédula O correo electrónico** (al menos UNO de los dos, política nueva 2026-05-16)
     * Ciudad + dirección + barrio
     * Método de pago elegido (aunque aún no haya pagado)
+
+- **CÉDULA O EMAIL — DATO OBLIGATORIO**:
+  Antes de cerrar el pedido, SIEMPRE pídele al cliente su **cédula de
+  ciudadanía O su correo electrónico** (puedes pedir uno o ambos):
+    > "Para procesar el envío necesito tu cédula o tu correo, ¿cuál
+    > prefieres darme?"
+  Si pasas `crear_draft_order` (link de pago Shopify), Shopify requiere
+  el email para mandar el comprobante de pago — pídelo siempre.
+  Si pasas `tomar_pedido_manual` (manual), basta con cualquiera de los dos.
 - NO esperas al comprobante. Esperar deja el pedido fuera del sistema.
 - Pasa SIEMPRE `items` ESTRUCTURADOS (con ref, talla, cantidad, precio_unit como número)
   y los tres totales: `subtotal`, `domicilio`, `total` como números en COP.

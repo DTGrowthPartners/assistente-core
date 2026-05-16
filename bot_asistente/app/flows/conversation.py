@@ -397,6 +397,10 @@ async def _construir_contexto_cliente(session: AsyncSession, cliente_id: int) ->
     lineas.append(f"- Número: {cliente.numero_whatsapp}")
     if cliente.nombre:
         lineas.append(f"- Nombre: {cliente.nombre}")
+    if cliente.cedula:
+        lineas.append(f"- Cédula: {cliente.cedula}")
+    if cliente.email:
+        lineas.append(f"- Email: {cliente.email}")
     if cliente.ciudad:
         lineas.append(f"- Ciudad: {cliente.ciudad}")
     if cliente.barrio:

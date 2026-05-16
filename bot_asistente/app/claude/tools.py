@@ -148,6 +148,8 @@ TOOL_DEFINITIONS: list[dict] = [
                 "nombre_cliente": {"type": "string"},
                 "ciudad": {"type": "string"},
                 "direccion": {"type": "string"},
+                "cedula": {"type": "string", "description": "Cédula del cliente (solo dígitos). Requerida para Shopify draft order."},
+                "email": {"type": "string", "description": "Email del cliente. Requerido para Shopify draft order (Shopify lo usa para notificar el pago)."},
             },
         },
     },
@@ -188,6 +190,14 @@ TOOL_DEFINITIONS: list[dict] = [
                 "ciudad": {"type": "string"},
                 "direccion": {"type": "string"},
                 "barrio": {"type": "string"},
+                "cedula": {
+                    "type": "string",
+                    "description": "Cédula de ciudadanía del cliente (solo dígitos, sin puntos). Requerida para envíos junto con email (al menos uno de los dos).",
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Correo electrónico del cliente. Requerido para envíos junto con cédula (al menos uno de los dos).",
+                },
                 "subtotal": {
                     "type": "number",
                     "description": "Suma de items (cantidad × precio_unit), SIN domicilio. Número en COP.",
@@ -780,6 +790,12 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
         subtotal = subtotal_calculado
         total = subtotal + domicilio
 
+    # Normalizar cedula (solo dígitos) y email (lower + strip)
+    cedula_raw = (args.get("cedula") or "").strip()
+    cedula = "".join(c for c in cedula_raw if c.isdigit()) or None
+    email_raw = (args.get("email") or "").strip().lower()
+    email = email_raw if "@" in email_raw else None
+
     # Insertar en pedidos
     pedido = Pedido(
         cliente_id=cliente_id,
@@ -792,14 +808,16 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
         ciudad=args.get("ciudad"),
         barrio=args.get("barrio"),
         metodo_pago=args.get("metodo_pago"),
+        cedula_cliente=cedula,
+        email_cliente=email,
         notas=args.get("resumen") or args.get("notas"),
     )
     session.add(pedido)
     await session.flush()
 
-    # Enriquecer datos del cliente: si nombre/ciudad/barrio del cliente están
-    # vacíos, completarlos con lo que dio en el pedido. NO sobreescribimos
-    # valores que ya existen (asumimos que el más viejo es correcto si ya está).
+    # Enriquecer datos del cliente: si nombre/ciudad/barrio/cedula/email
+    # del cliente están vacíos, completarlos con lo que dio en el pedido.
+    # NO sobreescribimos valores que ya existen.
     cliente_obj = (await session.execute(
         select(Cliente).where(Cliente.id == cliente_id)
     )).scalar_one_or_none()
@@ -811,6 +829,10 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
             cambios["ciudad"] = args["ciudad"]
         if not cliente_obj.barrio and args.get("barrio"):
             cambios["barrio"] = args["barrio"]
+        if not cliente_obj.cedula and cedula:
+            cambios["cedula"] = cedula
+        if not cliente_obj.email and email:
+            cambios["email"] = email
         if cambios:
             await session.execute(
                 update(Cliente).where(Cliente.id == cliente_id).values(**cambios)
@@ -830,6 +852,8 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
     detalle = (
         f"PEDIDO NUEVO #{pedido.id}\n"
         f"Cliente: {args['nombre_cliente']} ({cliente_numero})\n"
+        f"Cédula: {cedula or 'N/A'}\n"
+        f"Email: {email or 'N/A'}\n"
         f"Ciudad: {args.get('ciudad', 'N/A')}\n"
         f"Barrio: {args.get('barrio', 'N/A')}\n"
         f"Dirección: {args.get('direccion', 'N/A')}\n"
