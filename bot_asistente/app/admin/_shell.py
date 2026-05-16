@@ -12,6 +12,15 @@ SHELL_STYLES = r"""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Theme init: ANTES del CSS para evitar flash y bg mezclados -->
+<script>
+(function(){
+  try {
+    var saved = localStorage.getItem('theme');
+    document.documentElement.setAttribute('data-theme', saved === 'dark' ? 'dark' : 'light');
+  } catch(e) {}
+})();
+</script>
 <style>
   :root {
     --bg-canvas: #F7F7F8;
@@ -56,8 +65,9 @@ SHELL_STYLES = r"""
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
+  html { background: var(--bg-canvas); }
   body {
-    background: var(--bg-canvas);
+    background: var(--bg-canvas) !important;
     color: var(--text-primary);
     font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
     font-size: 14px; line-height: 1.5;
@@ -65,14 +75,20 @@ SHELL_STYLES = r"""
   }
 
   /* Layout app */
-  .app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+  .app {
+    display: grid; grid-template-columns: 240px 1fr; min-height: 100vh;
+    background: var(--bg-canvas) !important;
+  }
   @media (max-width: 768px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } }
   .sidebar {
-    background: var(--bg-sidebar); border-right: 1px solid var(--border);
+    background: var(--bg-sidebar) !important; border-right: 1px solid var(--border);
     padding: 20px 14px; display: flex; flex-direction: column;
     position: sticky; top: 0; height: 100vh; overflow-y: auto;
   }
-  .main { padding: 28px 32px; min-width: 0; }
+  .main {
+    background: var(--bg-canvas) !important;
+    padding: 28px 32px; min-width: 0;
+  }
 
   /* Sidebar */
   .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 16px; }

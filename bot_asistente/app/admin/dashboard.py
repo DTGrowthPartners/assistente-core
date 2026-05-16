@@ -246,6 +246,16 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dashboard — Laura</title>
+<script>
+/* Theme init temprano: aplica data-theme antes de que el CSS renderice
+   para evitar flash claro→oscuro y bg mezclado. */
+(function(){
+  try {
+    var saved = localStorage.getItem('theme');
+    document.documentElement.setAttribute('data-theme', saved === 'dark' ? 'dark' : 'light');
+  } catch(e) {}
+})();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -298,8 +308,9 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
 
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
+  html { background: var(--bg-canvas); }
   body {
-    background: var(--bg-canvas);
+    background: var(--bg-canvas) !important;
     color: var(--text-primary);
     font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
     font-size: 14px;
@@ -308,15 +319,18 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
   }
 
   /* ===== Layout ===== */
-  .app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+  .app {
+    display: grid; grid-template-columns: 240px 1fr; min-height: 100vh;
+    background: var(--bg-canvas) !important;
+  }
   .sidebar {
-    background: var(--bg-sidebar);
+    background: var(--bg-sidebar) !important;
     border-right: 1px solid var(--border);
     padding: 20px 14px;
     display: flex; flex-direction: column;
     position: sticky; top: 0; height: 100vh;
   }
-  .main { padding: 28px 32px; }
+  .main { background: var(--bg-canvas) !important; padding: 28px 32px; }
 
   /* ===== Sidebar ===== */
   .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 16px; }
