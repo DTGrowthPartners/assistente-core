@@ -104,25 +104,39 @@ def invalidar_cache() -> None:
 
 
 def superior_para(area: str | None = None) -> Miembro | None:
-    """
-    Devuelve el miembro responsable de un área. Cae al fallback si no encaja.
-    Devuelve None solo si no hay miembros activos en DB.
+    """Compatibilidad: devuelve EL primer miembro responsable de un área."""
+    miembros = superiores_para(area)
+    return miembros[0] if miembros else None
+
+
+def superiores_para(area: str | None = None) -> list[Miembro]:
+    """TODOS los miembros que deben recibir notificación para un área.
+
+    Política dueño 2026-05-16: notificar a TODOS los admins (Fabio y Stiven)
+    en paralelo, no solo al primero. Caso real: pedido #21 solo llegó a
+    Stiven porque la lógica anterior elegía un único fallback.
     """
     _cargar_si_caducado()
     miembros: list[Miembro] = _cache["miembros"]
     if not miembros:
-        return None
+        return []
 
     if area:
-        for m in miembros:
-            if area in m.areas:
-                return m
+        coincidentes = [m for m in miembros if area in m.areas]
+        if coincidentes:
+            return coincidentes
 
-    for m in miembros:
-        if m.es_fallback:
-            return m
+    fallbacks = [m for m in miembros if m.es_fallback]
+    if fallbacks:
+        return fallbacks
 
-    return miembros[0]
+    return miembros[:1]
+
+
+def listar_miembros_equipo() -> list[Miembro]:
+    """Lista de miembros activos (para la tool consultar_equipo)."""
+    _cargar_si_caducado()
+    return list(_cache["miembros"])
 
 
 def es_numero_interno(numero: str) -> bool:

@@ -112,6 +112,15 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
         },
     },
     {
+        "name": "consultar_equipo",
+        "description": (
+            "Devuelve la lista de miembros activos del equipo interno "
+            "(administradores, asesoras). Útil cuando el admin pregunta "
+            "'¿cuántos administradores tienes?' o '¿quién está en el equipo?'."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "pausar_bot_global",
         "description": (
             "DESACTIVA al bot Laura globalmente. Mientras esté pausado, "
@@ -332,6 +341,25 @@ async def handler_consultar_cliente(args: dict, ctx: dict) -> dict:
     }
 
 
+async def handler_consultar_equipo(args: dict, ctx: dict) -> dict:
+    """Devuelve la lista completa de miembros activos del equipo."""
+    from app.equipo.directorio import listar_miembros_equipo
+    miembros = listar_miembros_equipo()
+    return {
+        "total": len(miembros),
+        "miembros": [
+            {
+                "nombre": m.nombre,
+                "numero": m.numero_whatsapp,
+                "rol": m.rol,
+                "areas": m.areas,
+                "fallback": m.es_fallback,
+            }
+            for m in miembros
+        ],
+    }
+
+
 async def handler_pausar_bot_global(args: dict, ctx: dict) -> dict:
     """Marca bot_estado.activo=false. El webhook handler chequea esto antes
     de procesar mensajes de cliente."""
@@ -440,6 +468,7 @@ HANDLERS_EQUIPO: dict[str, Handler] = {
     "pausar_bot_global": handler_pausar_bot_global,
     "reanudar_bot_global": handler_reanudar_bot_global,
     "consultar_estado_bot": handler_consultar_estado_bot,
+    "consultar_equipo": handler_consultar_equipo,
 }
 
 

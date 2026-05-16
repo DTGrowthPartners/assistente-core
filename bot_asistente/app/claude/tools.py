@@ -34,7 +34,7 @@ from app.db.models import (
     TarifaDomicilio,
 )
 from app.db.repos import registrar_alerta_fabio
-from app.equipo.directorio import config_escalacion, superior_para
+from app.equipo.directorio import config_escalacion, superior_para, superiores_para
 from app.logging_setup import log
 from app.shopify.client import ShopifyError, crear_draft_order as shopify_crear_draft
 from app.whapi.client import (
@@ -846,9 +846,11 @@ async def handler_tomar_pedido_manual(args: dict, ctx: dict) -> dict:
     alerta = await registrar_alerta_fabio(
         session, tipo="pedido_confirmado", mensaje=detalle, cliente_id=cliente_id
     )
-    superior = superior_para("pedidos")
-    destino = superior.numero_whatsapp if superior else settings.fabio_phone
-    _enqueue_text(ctx, to=destino, text=detalle, alerta_id=alerta.id)
+    # Notificar a TODOS los admins (Fabio + Stiven), no solo al primero
+    superiores = superiores_para("pedidos")
+    destinos = [s.numero_whatsapp for s in superiores] or [settings.fabio_phone]
+    for destino in destinos:
+        _enqueue_text(ctx, to=destino, text=detalle, alerta_id=alerta.id)
 
     return {
         "registrado": True,
@@ -888,7 +890,8 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
     cliente_numero = ctx.get("cliente_numero") or "(número desconocido)"
     area = args.get("area")
 
-    superior = superior_para(area)
+    superiores = superiores_para(area)
+    superior = superiores[0] if superiores else None
     cfg = config_escalacion()
     prefijo = cfg.get("prefijo_mensajes_fabio", "[BOT ASISTENTE]")
     enviar_real = cfg.get("enviar_mensaje_real", True)
@@ -943,25 +946,26 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
 
     imagen_reenviada = False
     if enviar_real:
-        # Encolar el texto al outbox (drenará post-commit, evita inconsistencia
-        # con bug histórico de 2 mensajes "PEDIDO NUEVO" + 1 sola fila en BD).
-        _enqueue_text(ctx, to=superior.numero_whatsapp, text=mensaje, alerta_id=alerta.id)
+        # Encolar el texto al outbox para CADA admin (Fabio + Stiven).
+        for sup in superiores:
+            _enqueue_text(ctx, to=sup.numero_whatsapp, text=mensaje, alerta_id=alerta.id)
 
-        # Si el cliente envió imagen en este turno (comprobante de pago / queja),
-        # también encolarla para reenviarla al equipo después del commit.
+        # Si el cliente envió imagen (comprobante de pago / queja), también
+        # encolarla para CADA admin.
         inbound_bytes = ctx.get("inbound_imagen_bytes")
         if inbound_bytes and args["tipo"] in ("comprobante_pago", "queja"):
-            _enqueue_image_bytes(
-                ctx,
-                to=superior.numero_whatsapp,
-                data=inbound_bytes,
-                mime=ctx.get("inbound_imagen_mime") or "image/jpeg",
-                caption=f"Imagen del cliente {cliente_numero} ({args['tipo']})",
-            )
+            for sup in superiores:
+                _enqueue_image_bytes(
+                    ctx,
+                    to=sup.numero_whatsapp,
+                    data=inbound_bytes,
+                    mime=ctx.get("inbound_imagen_mime") or "image/jpeg",
+                    caption=f"Imagen del cliente {cliente_numero} ({args['tipo']})",
+                )
             imagen_reenviada = True
             log.info(
                 "tools.escalar.imagen_encolada",
-                destino=superior.numero_whatsapp,
+                destinos=[s.numero_whatsapp for s in superiores],
                 tipo=args["tipo"],
                 bytes=len(inbound_bytes),
             )
@@ -970,8 +974,8 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
         "escalado": True,
         "tipo": args["tipo"],
         "area": area,
-        "responsable": superior.nombre,
-        "notificado_whatsapp": "encolado (sale después del commit)",
+        "responsables": [s.nombre for s in superiores],
+        "notificado_whatsapp": f"encolado a {len(superiores)} admin(s) (sale después del commit)",
         "imagen_reenviada": imagen_reenviada,
     }
 
