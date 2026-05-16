@@ -295,6 +295,22 @@ async def webhook(
             resultados.append({"id": msg.id, "status": "blocked_client"})
             continue
 
+        # KILL SWITCH: el admin pausó al bot globalmente. No procesamos
+        # mensajes de clientes, solo los persistimos para no perder historia.
+        # Bot equipo (Fabio/Stiven) ya pasó la condición arriba, así que ellos
+        # SÍ pueden seguir hablando con el bot (incluso para reactivarlo).
+        if await _bot_global_pausado():
+            cliente = await get_or_create_cliente(session, msg.from_number)
+            await guardar_conversacion(
+                session, cliente_id=cliente.id, direccion="inbound",
+                tipo=msg.tipo, contenido=msg.texto,
+                whapi_message_id=msg.id, media_url=msg.media_url,
+                metadata={"bot_global_pausado": True},
+            )
+            log.info("webhook.bot_global_pausado_ignorado", cliente=msg.from_number)
+            resultados.append({"id": msg.id, "status": "bot_global_pausado"})
+            continue
+
         cliente = await get_or_create_cliente(session, msg.from_number)
 
         # ¿Bot pausado por intervención humana?
@@ -340,6 +356,36 @@ async def webhook(
         asyncio.create_task(_procesar_async(cliente_id, cliente_numero, msg))
 
     return {"status": "ok", "procesados": resultados}
+
+
+# Kill switch global: cache de 5s para no hacer query por cada webhook.
+_bot_estado_cache: dict[str, Any] = {"activo": True, "checked_at": 0.0}
+
+
+async def _bot_global_pausado() -> bool:
+    """¿Está pausado el bot globalmente vía tabla bot_estado?
+
+    Cache de 5 segundos para no hacer query Postgres por cada webhook entrante.
+    Cuando el admin llama pausar_bot_global, hay un delay max de ~5s hasta que
+    el bot deja de responder.
+    """
+    import time
+    from sqlalchemy import text as sa_text
+    now = time.time()
+    if now - _bot_estado_cache["checked_at"] < 5.0:
+        return not _bot_estado_cache["activo"]
+    try:
+        async with async_session_factory() as session:
+            row = (await session.execute(sa_text(
+                "SELECT activo FROM bot_estado WHERE id=1"
+            ))).first()
+        activo = bool(row[0]) if row else True
+        _bot_estado_cache["activo"] = activo
+        _bot_estado_cache["checked_at"] = now
+        return not activo
+    except Exception:
+        log.exception("webhook.bot_estado_check_fail")
+        return False  # defensivo: si falla, asumir activo
 
 
 # Locks por cliente_id — serializan mensajes del mismo cliente para evitar

@@ -22,15 +22,15 @@ settings = get_settings()
 # ────────────────────────────────────────────────────────────────────────────
 
 IDENTIDAD = """
-Eres el asistente virtual de **Innovación Fashion Outlet** (Cartagena de Indias).
-Atiendes a clientes por WhatsApp 24/7. Compartes la línea con asesoras humanas
-de la tienda.
+Eres **Laura**, asesora de **Innovación Fashion Outlet** (Cartagena de Indias).
+Atiendes a clientes por WhatsApp 24/7. Compartes la línea con otras asesoras
+humanas del equipo.
 
 PERSONALIDAD
 - Cálido, profesional, cercano — como una buena asesora de tienda física.
-- Hablas en primera persona como "asistente virtual". NUNCA usas un nombre
-  personal (no eres Laura, ni Sofía, ni ningún nombre). Si te preguntan tu
-  nombre, dices: "Soy el asistente virtual de Innovación Fashion".
+- Eres una persona, NO "el asistente virtual" ni "el bot". Si te preguntan
+  tu nombre, dices: "Soy Laura, asesora de Innovación Fashion. ¿Cómo te ayudo?"
+- No te presentes como IA, asistente virtual o robot. Eres asesora.
 - **NO USES EMOJIS.** Ni 😊 ni 🩷 ni ningún otro. La calidez se transmite con
   palabras ("qué bueno que nos escribes", "con gusto te ayudo"), no con emojis.
 - Mensajes cortos y claros. Sin muros de texto.
@@ -244,13 +244,11 @@ CUANDO EL CLIENTE DICE "me gusta este" / "quiero ese" SIN DAR REF
 
 def limpiar_referencias_laura(texto: str) -> str:
     """
-    Quita menciones a Laura del texto heredado de los archivos del bot viejo.
-    También quita la firma 🩷 que era de Laura.
+    Antes reemplazaba 'Laura' por 'el asistente'. Política actualizada
+    2026-05-16: el bot AHORA SÍ se llama Laura (decisión del dueño Stiven).
+    Solo limpiamos referencias a archivos internos y la firma emoji.
     """
-    # Reemplazos de nombre
     replacements = [
-        (r"\bLaura\b", "el asistente"),
-        (r"\bsoy Laura\b", "soy el asistente virtual"),
         (r"🩷", ""),
         (r"@laura\.md", "(archivo interno)"),
         (r"IDENTITY\.md", "(identidad interna)"),

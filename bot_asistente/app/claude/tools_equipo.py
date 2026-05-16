@@ -112,6 +112,33 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
         },
     },
     {
+        "name": "pausar_bot_global",
+        "description": (
+            "DESACTIVA al bot Laura globalmente. Mientras esté pausado, "
+            "el bot NO responderá a ningún cliente (los mensajes entrantes "
+            "se persisten pero no se procesan). Útil cuando el admin necesita "
+            "tomar el control manual, o si Laura empieza a comportarse mal. "
+            "Solo lo llaman administradores. Devolverá el estado al admin. "
+            "Para reactivar: llamar `reanudar_bot_global`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "razon": {"type": "string", "description": "Por qué se pausa (queda registrado en BD)"},
+            },
+        },
+    },
+    {
+        "name": "reanudar_bot_global",
+        "description": "REACTIVA al bot Laura. El bot vuelve a responder a clientes.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "consultar_estado_bot",
+        "description": "Devuelve si el bot está activo o pausado, quién lo pausó y cuándo.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "consultar_producto",
         "description": (
             "Busca un producto en el catálogo por referencia (ej. SD0017, "
@@ -305,6 +332,58 @@ async def handler_consultar_cliente(args: dict, ctx: dict) -> dict:
     }
 
 
+async def handler_pausar_bot_global(args: dict, ctx: dict) -> dict:
+    """Marca bot_estado.activo=false. El webhook handler chequea esto antes
+    de procesar mensajes de cliente."""
+    from sqlalchemy import text as sa_text
+    session: AsyncSession = ctx["session"]
+    razon = (args.get("razon") or "Pausado por administrador").strip()
+    miembro_nombre = ctx.get("miembro_nombre") or "admin"
+    await session.execute(sa_text(
+        "UPDATE bot_estado SET activo=false, pausado_por=:p, "
+        "pausado_en=now(), razon=:r, actualizado_en=now() WHERE id=1"
+    ), {"p": miembro_nombre, "r": razon})
+    log.warning("tools_equipo.bot_pausado", por=miembro_nombre, razon=razon)
+    return {
+        "pausado": True,
+        "por": miembro_nombre,
+        "razon": razon,
+        "nota": "El bot dejará de responder a clientes. Para reactivar usa `reanudar_bot_global`.",
+    }
+
+
+async def handler_reanudar_bot_global(args: dict, ctx: dict) -> dict:
+    from sqlalchemy import text as sa_text
+    session: AsyncSession = ctx["session"]
+    miembro_nombre = ctx.get("miembro_nombre") or "admin"
+    await session.execute(sa_text(
+        "UPDATE bot_estado SET activo=true, pausado_por=null, pausado_en=null, "
+        "razon=null, actualizado_en=now() WHERE id=1"
+    ))
+    log.warning("tools_equipo.bot_reanudado", por=miembro_nombre)
+    return {
+        "reanudado": True,
+        "por": miembro_nombre,
+        "nota": "El bot vuelve a responder a clientes.",
+    }
+
+
+async def handler_consultar_estado_bot(args: dict, ctx: dict) -> dict:
+    from sqlalchemy import text as sa_text
+    session: AsyncSession = ctx["session"]
+    row = (await session.execute(sa_text(
+        "SELECT activo, pausado_por, pausado_en, razon FROM bot_estado WHERE id=1"
+    ))).first()
+    if not row:
+        return {"activo": True, "nota": "Sin registro de estado, asumido activo."}
+    return {
+        "activo": bool(row[0]),
+        "pausado_por": row[1],
+        "pausado_en": row[2].isoformat() if row[2] else None,
+        "razon": row[3],
+    }
+
+
 async def handler_consultar_producto(args: dict, ctx: dict) -> dict:
     """Busca productos en productos_cache por ref exacta/parcial o nombre."""
     session: AsyncSession = ctx["session"]
@@ -358,6 +437,9 @@ HANDLERS_EQUIPO: dict[str, Handler] = {
     "consultar_pedidos": handler_consultar_pedidos,
     "consultar_cliente": handler_consultar_cliente,
     "consultar_producto": handler_consultar_producto,
+    "pausar_bot_global": handler_pausar_bot_global,
+    "reanudar_bot_global": handler_reanudar_bot_global,
+    "consultar_estado_bot": handler_consultar_estado_bot,
 }
 
 
