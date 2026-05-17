@@ -15,10 +15,10 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
-from anthropic import AsyncAnthropic
 from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.claude.anthropic_client import get_anthropic_client
 from app.claude.prompts import SYSTEM_PROMPT_EQUIPO
 from app.claude.tools_equipo import (
     HANDLERS_EQUIPO,
@@ -36,7 +36,7 @@ from app.whapi.parser import MensajeWhapi
 
 settings = get_settings()
 
-_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+_client = get_anthropic_client()
 
 # Costos aproximados (mismos que client.py)
 PRECIO_INPUT = Decimal("3.00") / Decimal("1000000")

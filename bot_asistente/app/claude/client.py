@@ -11,8 +11,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from anthropic import AsyncAnthropic
-
+from app.claude.anthropic_client import get_anthropic_client
 from app.claude.prompts import construir_system_prompt
 from app.claude.tools import TOOL_DEFINITIONS, ejecutar_tool
 from app.config import get_settings
@@ -20,7 +19,7 @@ from app.logging_setup import log
 
 settings = get_settings()
 
-_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+_client = get_anthropic_client()
 
 
 # Precios aproximados de Sonnet 4.6 (USD por 1M tokens) — para tracking interno

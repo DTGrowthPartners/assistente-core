@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     claude_max_tokens_output: int = 1024
     claude_max_conversaciones_por_hora: int = 300
 
+    # ── Dario (proxy local que enruta vía suscripción Claude Max) ───────────
+    # provider: "fallback" = Dario primario + API directa de fallback (recomendado)
+    #           "dario"    = solo Dario
+    #           "direct"   = solo API directa de Anthropic
+    claude_provider: str = "fallback"
+    dario_base_url: str = "http://127.0.0.1:3456"
+    dario_api_key: str = "dario"
+
     # ── whapi ───────────────────────────────────────────────────────────────
     whapi_base_url: str = "https://gate.whapi.cloud"
     whapi_token: str = Field(default="")

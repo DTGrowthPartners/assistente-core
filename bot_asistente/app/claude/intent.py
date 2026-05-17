@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from anthropic import AsyncAnthropic
-
+from app.claude.anthropic_client import get_anthropic_client
 from app.claude.prompts import PROMPT_CLASIFICADOR_INTENT
 from app.config import get_settings
 from app.logging_setup import log
 
 settings = get_settings()
 
-# Cliente singleton (puede ser compartido con claude.client.py si quieres)
-_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+_client = get_anthropic_client()
 
 
 INTENTS_VALIDOS = {
