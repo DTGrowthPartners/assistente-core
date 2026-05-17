@@ -300,9 +300,12 @@ def sidebar_html(active: str = "dashboard") -> str:
 
 
 # JS del theme toggle + sidebar collapse desktop + hamburger móvil
+# Envuelve en DOMContentLoaded para que funcione tanto inline (al final del body
+# en dashboard/chats) como inyectado en el head (vista SQLAdmin), donde el body
+# todavía no existe al parsearse el script.
 THEME_TOGGLE_JS = r"""
 <script>
-(function(){
+function _adminShellInit(){
   // ── Auto-inyectar mobile-bar + backdrop si no existen ──
   if (!document.querySelector('.mobile-bar')) {
     var mb = document.createElement('div');
@@ -377,7 +380,12 @@ THEME_TOGGLE_JS = r"""
   document.querySelectorAll('.sidebar a').forEach(a => a.addEventListener('click', () => {
     if (window.innerWidth <= 768) closeMobile();
   }));
-})();
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _adminShellInit);
+} else {
+  _adminShellInit();
+}
 </script>
 """
 

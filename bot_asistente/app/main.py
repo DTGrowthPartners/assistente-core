@@ -129,7 +129,7 @@ for view in ALL_VIEWS:
 # para que TODA la app /admin/* luzca igual. Oculta el navbar-vertical nativo
 # de SQLAdmin y desplaza el contenido a la derecha del sidebar custom.
 def _build_admin_inject() -> str:
-    from app.admin._shell import SHELL_STYLES, ICON_SPRITE, sidebar_html
+    from app.admin._shell import SHELL_STYLES, ICON_SPRITE, sidebar_html, THEME_TOGGLE_JS
     extra_css = """
 <style id="admin-shell-overrides">
   /* Posicionar el sidebar custom como overlay fixed (SQLAdmin no usa grid) */
@@ -377,7 +377,13 @@ document.addEventListener("DOMContentLoaded", function() {{
 </script>
 """
 
-    return SHELL_STYLES + extra_css + init_script + inject_sidebar_js + inject_js
+    # THEME_TOGGLE_JS auto-inyecta mobile-bar, sidebar-collapse-btn y maneja
+    # theme/collapse/hamburger. Va al final para que encuentre el sidebar ya
+    # inyectado en el DOM (inject_sidebar_js corre antes en DOMContentLoaded).
+    return (
+        SHELL_STYLES + extra_css + init_script
+        + inject_sidebar_js + inject_js + THEME_TOGGLE_JS
+    )
 
 
 _ADMIN_CSS_INJECT = _build_admin_inject()
