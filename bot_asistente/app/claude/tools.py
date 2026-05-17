@@ -920,17 +920,22 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
     prefijo = cfg.get("prefijo_mensajes_fabio", "[BOT ASISTENTE]")
     enviar_real = cfg.get("enviar_mensaje_real", True)
 
-    # Dedupe: alerta del mismo tipo para este cliente en últimos 5 min,
-    # sin resolver, ya escalada a Fabio
+    # Dedupe: SI ya existe alerta ABIERTA (no resuelta) del mismo tipo para
+    # este cliente en las últimas 6h, NO escalar de nuevo. El cliente puede
+    # repreguntar lo mismo de muchas formas; cada repregunta NO debe disparar
+    # otra notificación al equipo. El bot principal usará el return para
+    # contestar "ya estamos revisando, dame un momento".
+    #
+    # Ventana 6h (no 5min como antes) — los admins pueden tardar en responder
+    # y mientras tanto el cliente sigue insistiendo; no queremos spam.
     if cliente_id:
-        ventana = datetime.now(timezone.utc) - timedelta(minutes=5)
+        ventana = datetime.now(timezone.utc) - timedelta(hours=6)
         existente = (await session.execute(
             select(AlertaFabio).where(
                 AlertaFabio.cliente_id == cliente_id,
                 AlertaFabio.tipo == args["tipo"],
                 AlertaFabio.resuelto.is_(False),
                 AlertaFabio.created_at >= ventana,
-                AlertaFabio.enviado_a_fabio_en.isnot(None),
             ).order_by(AlertaFabio.id.desc()).limit(1)
         )).scalar_one_or_none()
         if existente:
@@ -939,10 +944,19 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
                 cliente_id=cliente_id,
                 tipo=args["tipo"],
                 alerta_existente_id=existente.id,
+                minutos_desde_alerta=int(
+                    (datetime.now(timezone.utc) - existente.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60
+                ) if existente.created_at else None,
             )
             return {
                 "escalado": False,
-                "razon": "ya existe alerta abierta de este tipo en los últimos 5 minutos",
+                "razon": (
+                    "Ya hay una alerta ABIERTA con el equipo sobre este tema "
+                    "para este cliente. NO crear otra. Al cliente dile algo "
+                    "como: 'Ya estamos verificando con el equipo, en cuanto "
+                    "tengamos la información te confirmo. Gracias por la "
+                    "paciencia.' — y NO digas que vas a escalar otra vez."
+                ),
                 "alerta_existente_id": existente.id,
                 "tipo": args["tipo"],
             }

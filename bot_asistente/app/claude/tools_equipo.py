@@ -15,7 +15,7 @@ from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AlertaFabio, Cliente, Conversacion, Pedido, ProductoCache
-from app.db.repos import get_or_create_cliente, guardar_conversacion
+from app.db.repos import get_or_create_cliente, guardar_conversacion, pausar_bot
 from app.logging_setup import log
 from app.utils.humanizer import sleep_humano
 from app.validators.output_rules import stripear_emojis
@@ -207,10 +207,38 @@ async def handler_responder_a_cliente(args: dict, ctx: dict) -> dict:
         },
     )
 
+    # Auto-pausar bot principal para ESTE cliente. Previene que el bot
+    # responda encima al mismo cliente con info contradictoria mientras
+    # el admin lleva la conversación. La pausa expira a la hora si no hay
+    # más intervención. Si el admin termina antes, puede reactivar Laura
+    # desde /admin/chats/{cliente_id} → botón "Reactivar Laura".
+    await pausar_bot(
+        session,
+        cliente_id=cliente.id,
+        horas=1,
+        razon=f"admin {ctx.get('miembro_nombre','equipo')} respondió vía bot equipo",
+    )
+
+    # Resolver alertas abiertas del mismo cliente (asumimos que al responder
+    # el admin está cerrando el ciclo de duda). Si necesita escalar otra cosa
+    # nueva, el bot principal creará una alerta fresca con detalles distintos.
+    from sqlalchemy import text as sa_text
+    resueltas = await session.execute(sa_text("""
+        UPDATE alertas_fabio
+        SET resuelto = true, resuelto_en = now()
+        WHERE cliente_id = :cid AND resuelto = false
+        RETURNING id
+    """), {"cid": cliente.id})
+    ids_cerradas = [r[0] for r in resueltas.fetchall()]
+    if ids_cerradas:
+        log.info("tools_equipo.alertas_auto_resueltas", cliente_id=cliente.id, ids=ids_cerradas)
+
     return {
         "enviado": True,
         "cliente": numero,
         "preview": mensaje[:80] + ("..." if len(mensaje) > 80 else ""),
+        "bot_pausado_1h": True,
+        "alertas_resueltas": ids_cerradas,
     }
 
 
