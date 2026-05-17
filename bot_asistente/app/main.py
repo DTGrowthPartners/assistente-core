@@ -163,9 +163,73 @@ def _build_admin_inject() -> str:
   }
   .page-header { border-bottom: none !important; padding-top: 24px !important; }
 
-  /* Login: si no hay session, NO mostrar sidebar — centrar el form */
-  body.no-shell aside.sidebar.injected { display: none; }
+  /* ── Login page (body.no-shell) — reskin shadcn ───────────────────────── */
+  body.no-shell aside.sidebar.injected,
+  body.no-shell .mobile-bar,
+  body.no-shell .sidebar-backdrop { display: none !important; }
   body.no-shell .page { margin-left: 0 !important; }
+  body.no-shell {
+    background: var(--bg-canvas) !important;
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+  body.no-shell .vh-100 {
+    height: auto !important; min-height: 100vh;
+    padding: 24px 16px;
+  }
+  body.no-shell form.card,
+  body.no-shell .card.card-md {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.04), 0 2px 8px rgba(0,0,0,0.06) !important;
+    max-width: 420px !important; width: 100%;
+    padding: 8px;
+  }
+  body.no-shell .card-body { padding: 32px 28px !important; }
+  body.no-shell .card-title {
+    font-size: 20px !important; font-weight: 700 !important;
+    color: var(--text-primary) !important; margin-bottom: 8px !important;
+    text-align: left !important;
+  }
+  body.no-shell .card-title::before {
+    content: ""; display: block; width: 44px; height: 44px;
+    background: var(--chip-orange-bg); color: var(--chip-orange);
+    border-radius: 10px; margin-bottom: 16px;
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="%23EA580C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>');
+    background-repeat: no-repeat; background-position: center;
+  }
+  body.no-shell .card-title::after {
+    content: "Ingresa con tu cuenta de administrador.";
+    display: block; font-size: 13px; color: var(--text-secondary);
+    font-weight: 400; margin-top: 6px; margin-bottom: 20px;
+  }
+  body.no-shell .form-label {
+    font-size: 12.5px !important; font-weight: 600 !important;
+    color: var(--text-secondary) !important; margin-bottom: 6px !important;
+    text-transform: none !important; letter-spacing: 0 !important;
+  }
+  body.no-shell .form-control,
+  body.no-shell input[type=text],
+  body.no-shell input[type=password] {
+    background: var(--bg-card) !important; color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important; border-radius: 8px !important;
+    padding: 10px 14px !important; font-size: 14px !important;
+  }
+  body.no-shell .form-control:focus,
+  body.no-shell input:focus {
+    border-color: var(--btn-primary-bg) !important;
+    box-shadow: 0 0 0 3px rgba(0,0,0,.05) !important;
+  }
+  body.no-shell .input-group-flat { display: block !important; }
+  body.no-shell .btn-primary {
+    background: var(--btn-primary-bg) !important;
+    color: var(--btn-primary-text) !important;
+    border: none !important; border-radius: 8px !important;
+    padding: 11px 16px !important; font-size: 14px !important;
+    font-weight: 600 !important; margin-top: 8px;
+  }
+  body.no-shell .form-footer { margin-top: 20px !important; }
 
   /* Cards de SQLAdmin con look shadcn */
   .card { background: var(--bg-card) !important; border: 1px solid var(--border) !important;

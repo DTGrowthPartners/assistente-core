@@ -79,16 +79,61 @@ SHELL_STYLES = r"""
     display: grid; grid-template-columns: 240px 1fr; min-height: 100vh;
     background: var(--bg-canvas) !important;
   }
-  @media (max-width: 768px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } }
+  .app.collapsed { grid-template-columns: 64px 1fr; }
+  @media (max-width: 768px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar { position: fixed !important; left: 0; top: 0; bottom: 0; z-index: 90;
+               width: 260px; transform: translateX(-100%); transition: transform .25s ease; }
+    .sidebar.open { transform: translateX(0); box-shadow: 0 0 24px rgba(0,0,0,.2); }
+    .main { padding: 16px 14px !important; }
+  }
   .sidebar {
     background: var(--bg-sidebar) !important; border-right: 1px solid var(--border);
     padding: 20px 14px; display: flex; flex-direction: column;
     position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    transition: width .2s ease;
   }
+  .app.collapsed .sidebar { padding: 20px 8px; }
+  .app.collapsed .sidebar .brand-name,
+  .app.collapsed .sidebar .nav-group-label,
+  .app.collapsed .sidebar .nav-item span,
+  .app.collapsed .sidebar #theme-label,
+  .app.collapsed .sidebar .new-btn { display: none; }
+  .app.collapsed .sidebar .nav-item { justify-content: center; padding: 10px; }
+  .app.collapsed .sidebar .brand { justify-content: center; }
   .main {
     background: var(--bg-canvas) !important;
     padding: 28px 32px; min-width: 0;
   }
+
+  /* Mobile hamburger + collapse desktop button */
+  .mobile-bar {
+    display: none; align-items: center; gap: 10px; padding: 10px 14px;
+    background: var(--bg-card); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 80;
+  }
+  .mobile-bar .brand-mini { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+  .mobile-bar .hamburger {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
+    width: 36px; height: 36px; display: grid; place-items: center; cursor: pointer;
+    color: var(--text-primary);
+  }
+  @media (max-width: 768px) { .mobile-bar { display: flex; } }
+  .sidebar-backdrop {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 85;
+  }
+  .sidebar-backdrop.show { display: block; }
+
+  /* Collapse button (desktop) — esquina superior derecha del sidebar */
+  .sidebar-collapse-btn {
+    position: absolute; right: 8px; top: 16px; width: 22px; height: 22px;
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px;
+    display: grid; place-items: center; cursor: pointer; z-index: 5;
+    color: var(--text-secondary); padding: 0;
+  }
+  .sidebar-collapse-btn:hover { color: var(--text-primary); background: var(--bg-soft); }
+  .app.collapsed .sidebar-collapse-btn svg { transform: rotate(180deg); }
+  @media (max-width: 768px) { .sidebar-collapse-btn { display: none; } }
 
   /* Sidebar */
   .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 16px; }
@@ -207,6 +252,9 @@ def sidebar_html(active: str = "dashboard") -> str:
 
     return f"""
 <aside class="sidebar">
+  <button class="sidebar-collapse-btn" id="sidebar-collapse" title="Colapsar / Expandir">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+  </button>
   <div class="brand">
     <div class="brand-logo">L</div>
     <div class="brand-name">Laura · Innovación</div>
@@ -215,27 +263,34 @@ def sidebar_html(active: str = "dashboard") -> str:
   <a class="new-btn" href="/admin/chats">+ Ver chats</a>
 
   <nav class="nav-group">
-    <a class="{cls('dashboard')}" href="/admin/dashboard"><svg class="ico" width="16" height="16"><use href="#i-dashboard"/></svg> Dashboard</a>
-    <a class="{cls('chats')}" href="/admin/chats"><svg class="ico" width="16" height="16"><use href="#i-messages"/></svg> Chats</a>
-    <a class="{cls('clientes')}" href="/admin/cliente/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> Clientes</a>
-    <a class="{cls('pedidos')}" href="/admin/pedido/list"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg> Pedidos</a>
-    <a class="{cls('alertas')}" href="/admin/alerta-fabio/list"><svg class="ico" width="16" height="16"><use href="#i-alert"/></svg> Alertas</a>
+    <a class="{cls('dashboard')}" href="/admin/dashboard"><svg class="ico" width="16" height="16"><use href="#i-dashboard"/></svg> <span>Dashboard</span></a>
+    <a class="{cls('chats')}" href="/admin/chats"><svg class="ico" width="16" height="16"><use href="#i-messages"/></svg> <span>Chats</span></a>
+    <a class="{cls('clientes')}" href="/admin/cliente/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Clientes</span></a>
+    <a class="{cls('pedidos')}" href="/admin/pedido/list"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg> <span>Pedidos</span></a>
+    <a class="{cls('alertas')}" href="/admin/alerta-fabio/list"><svg class="ico" width="16" height="16"><use href="#i-alert"/></svg> <span>Alertas</span></a>
   </nav>
 
   <div class="nav-group">
     <div class="nav-group-label">Equipo</div>
-    <a class="{cls('equipo')}" href="/admin/equipo-miembro/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> Administradores</a>
-    <a class="{cls('internos')}" href="/admin/numero-interno/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> Números internos</a>
+    <a class="{cls('equipo')}" href="/admin/equipo-miembro/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Administradores</span></a>
+    <a class="{cls('internos')}" href="/admin/numero-interno/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Números internos</span></a>
   </div>
 
   <div class="nav-group">
     <div class="nav-group-label">Catálogo</div>
-    <a class="{cls('productos')}" href="/admin/producto-cache/list"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg> Productos</a>
-    <a class="{cls('tarifas')}" href="/admin/tarifa-domicilio/list"><svg class="ico" width="16" height="16"><use href="#i-money"/></svg> Tarifas envío</a>
+    <a class="{cls('productos')}" href="/admin/producto-cache/list"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg> <span>Productos</span></a>
+    <a class="{cls('tarifas')}" href="/admin/tarifa-domicilio/list"><svg class="ico" width="16" height="16"><use href="#i-money"/></svg> <span>Tarifas envío</span></a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">Avanzado</div>
+    <a class="{cls('conversaciones')}" href="/admin/conversacion/list"><svg class="ico" width="16" height="16"><use href="#i-messages"/></svg> <span>Conversaciones</span></a>
+    <a class="{cls('sesiones')}" href="/admin/sesion/list"><svg class="ico" width="16" height="16"><use href="#i-cal"/></svg> <span>Sesiones</span></a>
+    <a class="{cls('pausas')}" href="/admin/intervencion-humana/list"><svg class="ico" width="16" height="16"><use href="#i-bot"/></svg> <span>Pausas humano</span></a>
   </div>
 
   <div class="nav-bottom">
-    <a class="nav-item" href="/admin"><svg class="ico" width="16" height="16"><use href="#i-settings"/></svg> Volver al admin</a>
+    <a class="nav-item" href="/admin"><svg class="ico" width="16" height="16"><use href="#i-settings"/></svg> <span>Volver al admin</span></a>
     <button class="nav-item" id="theme-toggle" style="background:transparent;border:none;width:100%;text-align:left;cursor:pointer;font:inherit;">
       <svg class="ico" width="16" height="16"><use href="#i-theme"/></svg> <span id="theme-label">Modo oscuro</span>
     </button>
@@ -244,10 +299,39 @@ def sidebar_html(active: str = "dashboard") -> str:
 """
 
 
-# JS del theme toggle (sin auto-dark — default light)
+# JS del theme toggle + sidebar collapse desktop + hamburger móvil
 THEME_TOGGLE_JS = r"""
 <script>
 (function(){
+  // ── Auto-inyectar mobile-bar + backdrop si no existen ──
+  if (!document.querySelector('.mobile-bar')) {
+    var mb = document.createElement('div');
+    mb.innerHTML = ''
+      + '<div class="mobile-bar">'
+      + '  <button class="hamburger" id="mobile-hamburger" aria-label="Menú">'
+      + '    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>'
+      + '  </button>'
+      + '  <div class="brand-mini"><div class="brand-logo">L</div><span>Laura · Innovación</span></div>'
+      + '</div>'
+      + '<div class="sidebar-backdrop" id="sidebar-backdrop"></div>';
+    while (mb.firstChild) document.body.insertBefore(mb.firstChild, document.body.firstChild);
+  }
+
+  // ── Auto-inyectar botón collapse si el sidebar no lo tiene ──
+  var sidebars = document.querySelectorAll('.sidebar');
+  sidebars.forEach(function(s){
+    if (s.querySelector('.sidebar-collapse-btn')) return;
+    var b = document.createElement('button');
+    b.className = 'sidebar-collapse-btn';
+    b.id = 'sidebar-collapse';
+    b.title = 'Colapsar / Expandir';
+    b.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>';
+    s.style.position = s.style.position || 'sticky';
+    s.appendChild(b);
+    // mejor: ponerlo absolute dentro del sidebar (CSS ya define right:-12px;top:18px)
+  });
+
+  // ── Tema dark/light ──
   const saved = localStorage.getItem('theme');
   document.documentElement.setAttribute('data-theme', saved === 'dark' ? 'dark' : 'light');
   const btn = document.getElementById('theme-toggle');
@@ -265,6 +349,48 @@ THEME_TOGGLE_JS = r"""
     if (lbl) lbl.textContent =
       document.documentElement.getAttribute('data-theme') === 'dark' ? 'Modo claro' : 'Modo oscuro';
   }
+
+  // ── Sidebar collapse (desktop) ──
+  const app = document.querySelector('.app');
+  if (app && localStorage.getItem('sidebar') === 'collapsed') app.classList.add('collapsed');
+  const cBtn = document.getElementById('sidebar-collapse');
+  if (cBtn && app) {
+    cBtn.addEventListener('click', () => {
+      app.classList.toggle('collapsed');
+      localStorage.setItem('sidebar', app.classList.contains('collapsed') ? 'collapsed' : 'expanded');
+    });
+  }
+
+  // ── Hamburger móvil ──
+  const hb = document.getElementById('mobile-hamburger');
+  const sb = document.querySelector('.sidebar');
+  const bk = document.getElementById('sidebar-backdrop');
+  function closeMobile() { if (sb) sb.classList.remove('open'); if (bk) bk.classList.remove('show'); }
+  if (hb && sb) {
+    hb.addEventListener('click', () => {
+      sb.classList.toggle('open');
+      if (bk) bk.classList.toggle('show', sb.classList.contains('open'));
+    });
+  }
+  if (bk) bk.addEventListener('click', closeMobile);
+  // Cerrar al navegar
+  document.querySelectorAll('.sidebar a').forEach(a => a.addEventListener('click', () => {
+    if (window.innerWidth <= 768) closeMobile();
+  }));
 })();
 </script>
+"""
+
+# Barra superior móvil (hamburger + logo). Solo se muestra <768px vía CSS.
+MOBILE_BAR_HTML = """
+<div class="mobile-bar">
+  <button class="hamburger" id="mobile-hamburger" aria-label="Menú">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
+  <div class="brand-mini">
+    <div class="brand-logo">L</div>
+    <span>Laura · Innovación</span>
+  </div>
+</div>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
 """
