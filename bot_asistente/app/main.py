@@ -132,14 +132,37 @@ def _build_admin_inject() -> str:
     from app.admin._shell import SHELL_STYLES, ICON_SPRITE, sidebar_html, THEME_TOGGLE_JS
     extra_css = """
 <style id="admin-shell-overrides">
-  /* Posicionar el sidebar custom como overlay fixed (SQLAdmin no usa grid) */
+  /* Sidebar custom (overlay fixed). SQLAdmin no usa CSS Grid como dashboard. */
   body > aside.sidebar.injected {
     position: fixed; left: 0; top: 0; bottom: 0; width: 240px; z-index: 50;
     background: var(--bg-sidebar) !important; border-right: 1px solid var(--border);
     padding: 20px 14px; display: flex; flex-direction: column;
     overflow-y: auto; height: 100vh;
+    transition: width .2s ease;
   }
-  @media (max-width: 768px) { body > aside.sidebar.injected { display: none; } }
+
+  /* Empujar TODO el contenido del body 240px a la derecha (robusto vs
+     selectores frágiles de Tabler/SQLAdmin). Solo cuando JS marcó el body. */
+  body.with-injected-sidebar { padding-left: 240px; transition: padding-left .2s ease; }
+  body.with-injected-sidebar.collapsed-sidebar { padding-left: 64px; }
+  body.with-injected-sidebar.collapsed-sidebar > aside.sidebar.injected { width: 64px; padding: 20px 8px; }
+  body.with-injected-sidebar.collapsed-sidebar .brand-name,
+  body.with-injected-sidebar.collapsed-sidebar .nav-group-label,
+  body.with-injected-sidebar.collapsed-sidebar aside.sidebar.injected .nav-item span,
+  body.with-injected-sidebar.collapsed-sidebar #theme-label,
+  body.with-injected-sidebar.collapsed-sidebar .new-btn { display: none !important; }
+  body.with-injected-sidebar.collapsed-sidebar aside.sidebar.injected .nav-item { justify-content: center; padding: 10px; }
+  body.with-injected-sidebar.collapsed-sidebar .sidebar-collapse-btn svg { transform: rotate(180deg); }
+
+  @media (max-width: 768px) {
+    body.with-injected-sidebar { padding-left: 0 !important; }
+    body > aside.sidebar.injected {
+      transform: translateX(-100%);
+      width: 260px;
+      transition: transform .25s ease;
+    }
+    body > aside.sidebar.injected.open { transform: translateX(0); box-shadow: 0 0 24px rgba(0,0,0,.2); }
+  }
 
   /* Ocultar el navbar-vertical nativo de SQLAdmin (Tabler) */
   .navbar-vertical,
@@ -147,15 +170,10 @@ def _build_admin_inject() -> str:
   body > .page > .navbar-vertical,
   body > .page > aside.navbar { display: none !important; }
 
-  /* Desplazar el contenido principal de SQLAdmin a la derecha del sidebar custom */
-  body > .page,
-  body > .page-wrapper,
-  body > div.page { margin-left: 240px !important; min-height: 100vh; }
-  @media (max-width: 768px) {
-    body > .page, body > .page-wrapper, body > div.page { margin-left: 0 !important; }
-  }
-  body > .page > .page-wrapper,
-  .page-wrapper { margin-left: 0 !important; padding-top: 0 !important; }
+  /* SQLAdmin envuelve todo en .page con grid de 2 columnas (sidebar + main).
+     Ya ocultamos el sidebar nativo, pero el grid sigue. Lo reseteamos. */
+  body > .page { display: block !important; min-height: auto !important; }
+  body > .page > .page-wrapper { margin-left: 0 !important; padding-top: 0 !important; }
 
   /* Fondo correcto en todas las vistas */
   body, .page, .page-wrapper, .page-body, .page-header {
@@ -359,12 +377,23 @@ document.addEventListener("DOMContentLoaded", function() {
     inject_sidebar_js = f"""
 <script>
 document.addEventListener("DOMContentLoaded", function() {{
-  if (/\\/admin\\/login\\b/.test(location.pathname)) return;
-  if (document.querySelector("aside.sidebar.injected")) return;
+  if (/\\/admin\\/login\\b/.test(location.pathname)) {{
+    document.body.classList.add("no-shell");
+    return;
+  }}
+  if (document.querySelector("aside.sidebar.injected")) {{
+    document.body.classList.add("with-injected-sidebar");
+    return;
+  }}
   var html = `{sidebar_js_safe}`;
   var t = document.createElement("template");
   t.innerHTML = html.trim();
   document.body.insertBefore(t.content.firstChild, document.body.firstChild);
+  document.body.classList.add("with-injected-sidebar");
+  // Restaurar estado collapsed si estaba guardado
+  if (localStorage.getItem("sidebar") === "collapsed") {{
+    document.body.classList.add("collapsed-sidebar");
+  }}
   // Inyectar el SVG sprite si no existe
   if (!document.getElementById("admin-icon-sprite")) {{
     var s = document.createElement("div");

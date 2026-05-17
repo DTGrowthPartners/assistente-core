@@ -354,19 +354,25 @@ function _adminShellInit(){
   }
 
   // ── Sidebar collapse (desktop) ──
+  // En dashboard/chats el target es .app (grid). En SQLAdmin (sin .app),
+  // alternamos body.collapsed-sidebar y el CSS hace el resto.
   const app = document.querySelector('.app');
-  if (app && localStorage.getItem('sidebar') === 'collapsed') app.classList.add('collapsed');
+  const target = app || document.body;
+  if (localStorage.getItem('sidebar') === 'collapsed') {
+    target.classList.add(app ? 'collapsed' : 'collapsed-sidebar');
+  }
   const cBtn = document.getElementById('sidebar-collapse');
-  if (cBtn && app) {
+  if (cBtn) {
     cBtn.addEventListener('click', () => {
-      app.classList.toggle('collapsed');
-      localStorage.setItem('sidebar', app.classList.contains('collapsed') ? 'collapsed' : 'expanded');
+      const cls = app ? 'collapsed' : 'collapsed-sidebar';
+      target.classList.toggle(cls);
+      localStorage.setItem('sidebar', target.classList.contains(cls) ? 'collapsed' : 'expanded');
     });
   }
 
   // ── Hamburger móvil ──
   const hb = document.getElementById('mobile-hamburger');
-  const sb = document.querySelector('.sidebar');
+  const sb = document.querySelector('.sidebar') || document.querySelector('aside.sidebar.injected');
   const bk = document.getElementById('sidebar-backdrop');
   function closeMobile() { if (sb) sb.classList.remove('open'); if (bk) bk.classList.remove('show'); }
   if (hb && sb) {
