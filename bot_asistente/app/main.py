@@ -124,53 +124,199 @@ for view in ALL_VIEWS:
 # Middleware que inyecta nuestro CSS y fuente Inter en cualquier HTML del admin.
 # Más simple que sobreescribir templates de Jinja (que requiere conocer la
 # herencia interna de SQLAdmin).
-_ADMIN_CSS_INJECT = (
-    '<link rel="preconnect" href="https://fonts.googleapis.com">'
-    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-    '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
-    '<link rel="stylesheet" href="/admin-static/custom.css">'
-    # JS: aplica tema dark/light al SQLAdmin + agrega header sticky con
-    # navegación a Dashboard / Chats. Auto-redirect /admin/ → /admin/dashboard.
-    '<script>'
-    '(function(){'
-    '  // Auto-redirect: si estamos en /admin exacto (home de SQLAdmin), ir al dashboard.'
-    '  var p = location.pathname.replace(/\\/$/, "");'
-    '  if (p === "/admin") { location.replace("/admin/dashboard"); return; }'
-    '  // Aplicar tema desde localStorage ANTES de que renderice'
-    '  try { var saved = localStorage.getItem("theme");'
-    '        document.documentElement.setAttribute("data-theme", saved === "dark" ? "dark" : "light"); } catch(e) {}'
-    '})();'
-    'document.addEventListener("DOMContentLoaded", function() {'
-    '  // Inyectar header sticky en todas las páginas SQLAdmin'
-    '  if (document.getElementById("custom-admin-header")) return;'
-    '  var saved = localStorage.getItem("theme") || "light";'
-    '  var themeLabel = saved === "dark" ? "☀ Modo claro" : "🌙 Modo oscuro";'
-    '  var header = document.createElement("div");'
-    '  header.id = "custom-admin-header";'
-    '  header.innerHTML = '
-    '    \'<div class="cah-inner">\''
-    '    + \'<a href="/admin/dashboard" class="cah-brand"><span class="cah-logo">L</span><span class="cah-name">Laura · Innovación</span></a>\''
-    '    + \'<nav class="cah-nav">\''
-    '      + \'<a href="/admin/dashboard">Dashboard</a>\''
-    '      + \'<a href="/admin/chats">Chats</a>\''
-    '      + \'<a href="/admin/cliente/list">Clientes</a>\''
-    '      + \'<a href="/admin/pedido/list">Pedidos</a>\''
-    '      + \'<a href="/admin/alerta-fabio/list">Alertas</a>\''
-    '    + \'</nav>\''
-    '    + \'<button id="cah-theme" class="cah-btn">\' + themeLabel + \'</button>\''
-    '    + \'</div>\';'
-    '  document.body.insertBefore(header, document.body.firstChild);'
-    '  document.body.classList.add("with-custom-header");'
-    '  document.getElementById("cah-theme").addEventListener("click", function() {'
-    '    var cur = document.documentElement.getAttribute("data-theme") || "light";'
-    '    var nxt = cur === "dark" ? "light" : "dark";'
-    '    document.documentElement.setAttribute("data-theme", nxt);'
-    '    localStorage.setItem("theme", nxt);'
-    '    this.textContent = nxt === "dark" ? "☀ Modo claro" : "🌙 Modo oscuro";'
-    '  });'
-    '});'
-    '</script>'
-)
+# Inyección de shell completo (sidebar + theme) en todas las vistas SQLAdmin.
+# Aprovecha SHELL_STYLES/ICON_SPRITE/sidebar_html ya usados por dashboard/chats
+# para que TODA la app /admin/* luzca igual. Oculta el navbar-vertical nativo
+# de SQLAdmin y desplaza el contenido a la derecha del sidebar custom.
+def _build_admin_inject() -> str:
+    from app.admin._shell import SHELL_STYLES, ICON_SPRITE, sidebar_html
+    extra_css = """
+<style id="admin-shell-overrides">
+  /* Posicionar el sidebar custom como overlay fixed (SQLAdmin no usa grid) */
+  body > aside.sidebar.injected {
+    position: fixed; left: 0; top: 0; bottom: 0; width: 240px; z-index: 50;
+    background: var(--bg-sidebar) !important; border-right: 1px solid var(--border);
+    padding: 20px 14px; display: flex; flex-direction: column;
+    overflow-y: auto; height: 100vh;
+  }
+  @media (max-width: 768px) { body > aside.sidebar.injected { display: none; } }
+
+  /* Ocultar el navbar-vertical nativo de SQLAdmin (Tabler) */
+  .navbar-vertical,
+  .navbar-vertical.navbar-expand-lg,
+  body > .page > .navbar-vertical,
+  body > .page > aside.navbar { display: none !important; }
+
+  /* Desplazar el contenido principal de SQLAdmin a la derecha del sidebar custom */
+  body > .page,
+  body > .page-wrapper,
+  body > div.page { margin-left: 240px !important; min-height: 100vh; }
+  @media (max-width: 768px) {
+    body > .page, body > .page-wrapper, body > div.page { margin-left: 0 !important; }
+  }
+  body > .page > .page-wrapper,
+  .page-wrapper { margin-left: 0 !important; padding-top: 0 !important; }
+
+  /* Fondo correcto en todas las vistas */
+  body, .page, .page-wrapper, .page-body, .page-header {
+    background: var(--bg-canvas) !important;
+  }
+  .page-header { border-bottom: none !important; padding-top: 24px !important; }
+
+  /* Login: si no hay session, NO mostrar sidebar — centrar el form */
+  body.no-shell aside.sidebar.injected { display: none; }
+  body.no-shell .page { margin-left: 0 !important; }
+
+  /* Cards de SQLAdmin con look shadcn */
+  .card { background: var(--bg-card) !important; border: 1px solid var(--border) !important;
+          border-radius: 12px !important; box-shadow: var(--shadow-card) !important; }
+  .card-header { background: var(--bg-card) !important;
+                 border-bottom: 1px solid var(--border-subtle) !important; }
+  .card-body { background: var(--bg-card) !important; }
+
+  /* Tabla */
+  .table { background: var(--bg-card) !important; color: var(--text-primary) !important; }
+  .table thead th { background: var(--bg-soft) !important; color: var(--text-tertiary) !important;
+                    font-size: 11px !important; text-transform: uppercase; letter-spacing: .5px;
+                    border-bottom: 1px solid var(--border) !important; }
+  .table tbody tr { background: var(--bg-card) !important; }
+  .table tbody tr:hover { background: var(--bg-soft) !important; }
+  .table tbody td { color: var(--text-primary) !important;
+                    border-color: var(--border-subtle) !important;
+                    border-top: none !important;
+                    border-bottom: 1px solid var(--border-subtle) !important; }
+  .table tbody td a { color: var(--chip-blue) !important; }
+
+  /* Form controls */
+  .form-control, input[type=text], input[type=search], input[type=email],
+  input[type=number], input[type=password], select, textarea {
+    background: var(--bg-card) !important; color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important; border-radius: 8px !important;
+  }
+  .form-label, label { color: var(--text-secondary) !important; }
+
+  /* Botones */
+  .btn-primary { background: var(--btn-primary-bg) !important; color: var(--btn-primary-text) !important;
+                 border: none !important; border-radius: 8px !important; }
+  .btn-outline-secondary, .btn-secondary {
+    background: var(--bg-card) !important; color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important; border-radius: 8px !important; }
+  .btn-danger { border-radius: 8px !important; }
+
+  /* Paginación */
+  .pagination .page-link { background: var(--bg-card) !important; color: var(--text-secondary) !important;
+                           border: 1px solid var(--border) !important; border-radius: 8px !important;
+                           margin: 0 2px; }
+  .pagination .page-item.active .page-link {
+    background: var(--btn-primary-bg) !important; color: var(--btn-primary-text) !important;
+    border-color: var(--btn-primary-bg) !important; }
+
+  /* Dropdowns + modales */
+  .dropdown-menu, .modal-content { background: var(--bg-card) !important;
+    color: var(--text-primary) !important; border-color: var(--border) !important; }
+  .dropdown-item { color: var(--text-primary) !important; }
+  .dropdown-item:hover { background: var(--bg-soft) !important; }
+</style>
+"""
+    init_script = """
+<script>
+(function(){
+  // Auto-redirect /admin → /admin/dashboard
+  var p = location.pathname.replace(/\\/$/, "");
+  if (p === "/admin") { location.replace("/admin/dashboard"); return; }
+  // Tema dark/light desde localStorage (también ya lo hace SHELL_STYLES head-script,
+  // pero por seguridad lo repetimos)
+  try {
+    var saved = localStorage.getItem("theme");
+    document.documentElement.setAttribute("data-theme", saved === "dark" ? "dark" : "light");
+  } catch(e) {}
+})();
+</script>
+"""
+    # JS que inyecta el sidebar al DOM cuando carga la página + theme toggle
+    inject_js = """
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  // No inyectar shell en la página de login (form sin session todavía)
+  var isLogin = /\\/admin\\/login\\b/.test(location.pathname);
+  if (isLogin) {
+    document.body.classList.add("no-shell");
+    return;
+  }
+  if (document.querySelector("aside.sidebar.injected")) return;
+
+  // Determinar el item activo según la URL actual
+  var path = location.pathname;
+  var active = "";
+  if (path.indexOf("/admin/dashboard") === 0) active = "dashboard";
+  else if (path.indexOf("/admin/chats") === 0) active = "chats";
+  else if (path.indexOf("/admin/cliente") === 0) active = "clientes";
+  else if (path.indexOf("/admin/pedido") === 0) active = "pedidos";
+  else if (path.indexOf("/admin/alerta") === 0) active = "alertas";
+  else if (path.indexOf("/admin/equipo") === 0) active = "equipo";
+  else if (path.indexOf("/admin/numero") === 0) active = "internos";
+  else if (path.indexOf("/admin/producto") === 0) active = "productos";
+  else if (path.indexOf("/admin/tarifa") === 0) active = "tarifas";
+
+  // Marcar el item activo via clase
+  setTimeout(function(){
+    document.querySelectorAll('aside.sidebar.injected .nav-item').forEach(function(a){
+      a.classList.remove('active');
+      if (active && a.getAttribute('href') && a.getAttribute('href').indexOf('/admin/' + active.replace('clientes','cliente').replace('pedidos','pedido').replace('alertas','alerta').replace('equipo','equipo-miembro').replace('internos','numero-interno').replace('productos','producto-cache').replace('tarifas','tarifa-domicilio')) === 0) {
+        a.classList.add('active');
+      }
+    });
+  }, 10);
+
+  // Theme toggle handler (el botón está dentro del sidebar inyectado)
+  var btn = document.getElementById("theme-toggle");
+  if (btn) {
+    var lbl = document.getElementById("theme-label");
+    if (lbl) lbl.textContent =
+      (document.documentElement.getAttribute("data-theme") === "dark" ? "Modo claro" : "Modo oscuro");
+    btn.addEventListener("click", function(){
+      var cur = document.documentElement.getAttribute("data-theme") || "light";
+      var nxt = cur === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", nxt);
+      localStorage.setItem("theme", nxt);
+      if (lbl) lbl.textContent = nxt === "dark" ? "Modo claro" : "Modo oscuro";
+    });
+  }
+});
+</script>
+"""
+    # Variante del sidebar con clase 'injected' para que solo el inyectado
+    # use las posiciones overlay (no rompe a dashboard/chats que ya usan grid).
+    sidebar = sidebar_html(active="").replace(
+        '<aside class="sidebar">', '<aside class="sidebar injected">'
+    )
+    # Convertimos el HTML del sidebar en algo que body.insertBefore pueda usar
+    sidebar_js_safe = sidebar.replace("\\", "\\\\").replace("`", "\\`")
+    inject_sidebar_js = f"""
+<script>
+document.addEventListener("DOMContentLoaded", function() {{
+  if (/\\/admin\\/login\\b/.test(location.pathname)) return;
+  if (document.querySelector("aside.sidebar.injected")) return;
+  var html = `{sidebar_js_safe}`;
+  var t = document.createElement("template");
+  t.innerHTML = html.trim();
+  document.body.insertBefore(t.content.firstChild, document.body.firstChild);
+  // Inyectar el SVG sprite si no existe
+  if (!document.getElementById("admin-icon-sprite")) {{
+    var s = document.createElement("div");
+    s.id = "admin-icon-sprite";
+    s.innerHTML = `{ICON_SPRITE.replace("`", "\\`")}`;
+    s.style.display = "none";
+    document.body.appendChild(s);
+  }}
+}});
+</script>
+"""
+
+    return SHELL_STYLES + extra_css + init_script + inject_sidebar_js + inject_js
+
+
+_ADMIN_CSS_INJECT = _build_admin_inject()
 
 
 class AdminCSSInjector(BaseHTTPMiddleware):
