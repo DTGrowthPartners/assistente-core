@@ -112,6 +112,25 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
         },
     },
     {
+        "name": "consultar_chat_cliente",
+        "description": (
+            "Lee el historial reciente del chat de un cliente (inbound, outbound "
+            "del bot, y mensajes humanos del admin). ÚSALO cuando el admin "
+            "pregunte cosas como 'revisa el chat de X', '¿qué le dijimos a Y?', "
+            "'estamos esperando pago de Z?'. Devuelve los últimos N mensajes "
+            "ordenados cronológicamente con dirección (cliente/bot/humano) y "
+            "timestamp."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "numero": {"type": "string", "description": "Número del cliente, ej +573135536355"},
+                "nombre_parcial": {"type": "string", "description": "Alternativa: nombre parcial del cliente"},
+                "max_mensajes": {"type": "integer", "description": "Máximo de mensajes a traer (default 25)"},
+            },
+        },
+    },
+    {
         "name": "consultar_equipo",
         "description": (
             "Devuelve la lista de miembros activos del equipo interno "
@@ -369,6 +388,60 @@ async def handler_consultar_cliente(args: dict, ctx: dict) -> dict:
     }
 
 
+async def handler_consultar_chat_cliente(args: dict, ctx: dict) -> dict:
+    """Trae los últimos N mensajes del chat del cliente para que el bot equipo
+    pueda informar al admin del estado real de la conversación."""
+    session: AsyncSession = ctx["session"]
+    max_msgs = int(args.get("max_mensajes") or 25)
+    max_msgs = max(1, min(max_msgs, 60))
+
+    stmt = select(Cliente)
+    if numero := args.get("numero"):
+        stmt = stmt.where(Cliente.numero_whatsapp == numero)
+    elif nombre := args.get("nombre_parcial"):
+        stmt = stmt.where(Cliente.nombre.ilike(f"%{nombre}%"))
+    else:
+        return {"error": "Pasa `numero` o `nombre_parcial`"}
+
+    cliente = (await session.execute(stmt.limit(1))).scalar_one_or_none()
+    if not cliente:
+        return {"error": "Cliente no encontrado"}
+
+    msgs = (await session.execute(
+        select(Conversacion)
+        .where(Conversacion.cliente_id == cliente.id)
+        .order_by(Conversacion.timestamp.desc())
+        .limit(max_msgs)
+    )).scalars().all()
+    # Ordenar cronológico (más viejo → más reciente)
+    msgs = list(reversed(msgs))
+
+    return {
+        "cliente": {
+            "id": cliente.id,
+            "numero": cliente.numero_whatsapp,
+            "nombre": cliente.nombre,
+            "ciudad": cliente.ciudad,
+            "barrio": cliente.barrio,
+        },
+        "total_mensajes_traidos": len(msgs),
+        "mensajes": [
+            {
+                "ts": m.timestamp.isoformat() if m.timestamp else None,
+                "de": (
+                    "cliente" if m.direccion == "inbound"
+                    else "humano_admin" if m.direccion == "humano"
+                    else "bot"
+                ),
+                "tipo": m.tipo,
+                "contenido": (m.contenido or "")[:500],
+                "intent": m.intent,
+            }
+            for m in msgs
+        ],
+    }
+
+
 async def handler_consultar_equipo(args: dict, ctx: dict) -> dict:
     """Devuelve la lista completa de miembros activos del equipo."""
     from app.equipo.directorio import listar_miembros_equipo
@@ -492,6 +565,7 @@ HANDLERS_EQUIPO: dict[str, Handler] = {
     "consultar_alertas_abiertas": handler_consultar_alertas_abiertas,
     "consultar_pedidos": handler_consultar_pedidos,
     "consultar_cliente": handler_consultar_cliente,
+    "consultar_chat_cliente": handler_consultar_chat_cliente,
     "consultar_producto": handler_consultar_producto,
     "pausar_bot_global": handler_pausar_bot_global,
     "reanudar_bot_global": handler_reanudar_bot_global,
