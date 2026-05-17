@@ -19,7 +19,7 @@ from app.db.repos import get_or_create_cliente, guardar_conversacion, pausar_bot
 from app.logging_setup import log
 from app.utils.humanizer import sleep_humano
 from app.validators.output_rules import stripear_emojis
-from app.whapi.client import enviar_paused, enviar_texto, enviar_typing
+from app.whapi.client import enviar_imagen_url, enviar_paused, enviar_texto, enviar_typing
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -165,6 +165,26 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
         "name": "consultar_estado_bot",
         "description": "Devuelve si el bot está activo o pausado, quién lo pausó y cuándo.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "enviar_foto_producto_a_cliente",
+        "description": (
+            "Envía la foto de un producto al cliente. Busca el producto por "
+            "referencia (ej INN5658, SD0017) en el catálogo y manda su imagen "
+            "por WhatsApp con un caption opcional. ÚSALO cuando el admin diga "
+            "cosas como 'envíale las fotos de las bermudas X, Y, Z'. Puedes "
+            "llamarla varias veces (una por foto) si son varias prendas. "
+            "También pausa el bot principal 1h para ese cliente."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "numero_cliente": {"type": "string", "description": "Número +57..."},
+                "ref": {"type": "string", "description": "Referencia del producto, ej INN5658"},
+                "caption": {"type": "string", "description": "Texto opcional bajo la foto (1-2 líneas)"},
+            },
+            "required": ["numero_cliente", "ref"],
+        },
     },
     {
         "name": "crear_pedido_manual",
@@ -439,6 +459,74 @@ async def handler_consultar_cliente(args: dict, ctx: dict) -> dict:
     }
 
 
+async def handler_enviar_foto_producto_a_cliente(args: dict, ctx: dict) -> dict:
+    """Envía la foto de un producto al cliente desde el bot equipo.
+
+    Útil cuando el admin dice 'mándale la foto de la INN5658 a +573...'.
+    Pausa el bot principal 1h para evitar que responda encima al cliente.
+    """
+    session: AsyncSession = ctx["session"]
+    numero = args["numero_cliente"]
+    ref = args["ref"].upper().strip()
+    caption_extra = (args.get("caption") or "").strip()
+
+    prod = (await session.execute(
+        select(ProductoCache).where(ProductoCache.ref == ref)
+    )).scalar_one_or_none()
+    if not prod:
+        return {"enviado": False, "razon": f"Ref {ref} no encontrada en catálogo"}
+    if not prod.imagen_url:
+        return {"enviado": False, "razon": f"Producto {ref} sin imagen URL"}
+
+    # Caption: precio + extra del admin
+    precio_str = f" — ${int(prod.precio_detal):,}".replace(",", ".") if prod.precio_detal else ""
+    base = f"{prod.nombre} ({prod.ref}){precio_str}"
+    caption = f"{base}\n\n{caption_extra}" if caption_extra else base
+    caption = stripear_emojis(caption)
+
+    cliente = await get_or_create_cliente(session, numero)
+
+    try:
+        await enviar_imagen_url(numero, prod.imagen_url, caption=caption)
+    except Exception as e:
+        log.exception("tools_equipo.foto_producto.fail", ref=ref, numero=numero, error=str(e))
+        return {"enviado": False, "razon": f"Error whapi: {e}"}
+
+    await guardar_conversacion(
+        session,
+        cliente_id=cliente.id,
+        direccion="outbound",
+        tipo="imagen",
+        contenido=caption,
+        media_url=prod.imagen_url,
+        intent="instruccion_equipo",
+        modelo="via_equipo",
+        metadata={
+            "via": "equipo_admin",
+            "ref": ref,
+            "miembro_equipo": ctx.get("miembro_nombre"),
+        },
+    )
+
+    # Pausar bot principal 1h para este cliente
+    await pausar_bot(
+        session,
+        cliente_id=cliente.id,
+        horas=1,
+        razon=f"admin {ctx.get('miembro_nombre','equipo')} envió foto producto vía bot equipo",
+    )
+
+    log.info("tools_equipo.foto_producto.enviada", ref=ref, numero=numero, cliente_id=cliente.id)
+
+    return {
+        "enviado": True,
+        "ref": ref,
+        "cliente": numero,
+        "precio": float(prod.precio_detal) if prod.precio_detal else None,
+        "bot_pausado_1h": True,
+    }
+
+
 async def handler_crear_pedido_manual(args: dict, ctx: dict) -> dict:
     """Registra retroactivamente un pedido cerrado vía conversación humana.
 
@@ -706,6 +794,7 @@ HANDLERS_EQUIPO: dict[str, Handler] = {
     "consultar_cliente": handler_consultar_cliente,
     "consultar_chat_cliente": handler_consultar_chat_cliente,
     "crear_pedido_manual": handler_crear_pedido_manual,
+    "enviar_foto_producto_a_cliente": handler_enviar_foto_producto_a_cliente,
     "consultar_producto": handler_consultar_producto,
     "pausar_bot_global": handler_pausar_bot_global,
     "reanudar_bot_global": handler_reanudar_bot_global,

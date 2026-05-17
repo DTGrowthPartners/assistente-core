@@ -538,17 +538,33 @@ async def webhook(
             resultados.append({"id": msg.id, "status": "internal_team_ignored"})
             continue
 
-        # Bloqueo del número del dueño (alerta a Fabio)
+        # Bloqueo del número del dueño (alerta a Fabio, dedupada)
         if msg.from_number == settings.dueno_phone_blocked:
             log.warning("webhook.numero_bloqueado", from_=msg.from_number)
-            await registrar_alerta_fabio(
-                session,
-                tipo="mensaje_dueno",
-                mensaje=(
-                    f"Llegó un mensaje del número del dueño ({msg.from_number}): "
-                    f"{(msg.texto or '')[:200]}"
+            # Dedupe: si ya hay alerta mensaje_dueno abierta o creada en las
+            # últimas 6h, NO crear otra. El dueño puede mandar ráfagas y no
+            # queremos spamear 60 alertas idénticas a Fabio.
+            from datetime import timedelta as _td
+            from sqlalchemy import text as _sa_text
+            ventana = datetime.now(timezone.utc) - _td(hours=6)
+            ya_hay = (await session.execute(
+                _sa_text(
+                    "SELECT 1 FROM alertas_fabio "
+                    "WHERE tipo='mensaje_dueno' "
+                    "AND created_at >= :v "
+                    "LIMIT 1"
                 ),
-            )
+                {"v": ventana},
+            )).first()
+            if not ya_hay:
+                await registrar_alerta_fabio(
+                    session,
+                    tipo="mensaje_dueno",
+                    mensaje=(
+                        f"Llegó un mensaje del número del dueño ({msg.from_number}): "
+                        f"{(msg.texto or '')[:200]}"
+                    ),
+                )
             resultados.append({"id": msg.id, "status": "blocked_dueno"})
             continue
 

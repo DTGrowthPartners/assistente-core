@@ -82,7 +82,23 @@ async def dashboard_json(
         .where(and_(Conversacion.timestamp >= hoy, Conversacion.direccion == "inbound"))
     )).scalar_one()
 
-    # Clientes activos (escribieron al menos 1 vez en últimos 7d)
+    # Mensajes enviados hoy (outbound del bot + humano admin)
+    outbound_hoy = (await session.execute(
+        select(func.count())
+        .select_from(Conversacion)
+        .where(and_(
+            Conversacion.timestamp >= hoy,
+            Conversacion.direccion.in_(["outbound", "humano"]),
+        ))
+    )).scalar_one()
+
+    # Chats activos hoy (clientes distintos que escribieron al menos 1 inbound HOY)
+    chats_activos_hoy = (await session.execute(
+        select(func.count(func.distinct(Conversacion.cliente_id)))
+        .where(and_(Conversacion.timestamp >= hoy, Conversacion.direccion == "inbound"))
+    )).scalar_one()
+
+    # Clientes activos (escribieron al menos 1 vez en últimos 7d) — para histórico
     clientes_activos = (await session.execute(
         select(func.count(func.distinct(Conversacion.cliente_id)))
         .where(Conversacion.timestamp >= hace_7d)
@@ -197,6 +213,8 @@ async def dashboard_json(
         "conversaciones": {
             "total_hoy": int(conv_hoy),
             "inbound_hoy": int(inbound_hoy),
+            "outbound_hoy": int(outbound_hoy),
+            "chats_activos_hoy": int(chats_activos_hoy),
             "clientes_activos_7d": int(clientes_activos),
         },
         "claude": {
@@ -788,11 +806,9 @@ fetch('/admin/dashboard.json').then(r => r.json()).then(d => {
     { chip: 'purple', icon: '#i-money',    t: 'Ventas hoy',         v: cop(d.ventas.hoy.total_cop),   sub: d.ventas.hoy.cantidad + ' pedidos' },
     { chip: 'blue',   icon: '#i-shop',     t: 'Ventas 7 días',      v: cop(d.ventas['7d'].total_cop), sub: d.ventas['7d'].cantidad + ' pedidos' },
     { chip: 'green',  icon: '#i-spark',    t: 'Ventas 30 días',     v: cop(d.ventas['30d'].total_cop),sub: d.ventas['30d'].cantidad + ' pedidos' },
-    { chip: 'pink',   icon: '#i-messages', t: 'Conversaciones hoy', v: d.conversaciones.total_hoy,    sub: d.conversaciones.inbound_hoy + ' inbound' },
-    { chip: 'orange', icon: '#i-users',    t: 'Clientes activos 7d',v: d.conversaciones.clientes_activos_7d, sub: 'únicos' },
-    { chip: 'blue',   icon: '#i-bot',      t: 'Costo Claude hoy',   v: fmtUSD(d.claude.costo_usd_hoy),sub: '30d: ' + fmtUSD(d.claude.costo_usd_30d) },
-    { chip: 'green',  icon: '#i-spark',    t: 'Cache hit',          v: d.claude.cache_hit_rate_pct + '%', sub: 'ahorro de tokens' },
-    { chip: 'orange', icon: '#i-alert',    t: 'Alertas pendientes', v: d.alertas_pendientes,          sub: 'sin resolver' },
+    { chip: 'pink',   icon: '#i-messages', t: 'Chats activos hoy',   v: d.conversaciones.chats_activos_hoy, sub: 'clientes únicos' },
+    { chip: 'blue',   icon: '#i-bot',      t: 'Mensajes enviados',   v: d.conversaciones.outbound_hoy,      sub: 'bot + asesoras' },
+    { chip: 'orange', icon: '#i-alert',    t: 'Alertas pendientes',  v: d.alertas_pendientes,               sub: 'sin resolver' },
   ];
   k.innerHTML = cards.map(c => `
     <div class="kpi">
