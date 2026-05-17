@@ -284,8 +284,12 @@ async def procesar_mensaje_equipo(
                         tokens_output=tokens_out,
                         cache_read_tokens=cache_r,
                         cache_create_tokens=cache_w,
-                        costo_usd=costo,
-                        metadata={"es_equipo": True, "miembro": miembro.nombre, "tools": tools_usadas},
+                        metadata={
+                            "es_equipo": True,
+                            "miembro": miembro.nombre,
+                            "tools": tools_usadas,
+                            "costo_usd": str(costo),
+                        },
                     )
                 except Exception as e:
                     log.warning("flow_equipo.persistir_outbound_fail", error=str(e))

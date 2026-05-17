@@ -148,14 +148,8 @@ def validar(texto: str, *, contexto: dict | None = None) -> list[ValidationIssue
                         ),
                     ))
 
-    # 7. Bot menciona ser Laura (no debería pasar pero defensivo)
-    if re.search(r"\bsoy\s+laura\b", texto, re.IGNORECASE):
-        issues.append(ValidationIssue(
-            rule="R_IDENTIDAD",
-            severity="critico",
-            descripcion="El bot se identifica como 'Laura' (incorrecto, somos 'asistente virtual').",
-            sugerencia="Reemplazar por 'Soy el asistente virtual de Innovación Fashion'.",
-        ))
+    # 7. (regla R_IDENTIDAD eliminada 2026-05-17: la política actual es que el
+    # bot SÍ se llama Laura, asesora de Innovación Fashion).
 
     # 8. Emojis — el negocio decidió no usar ninguno
     if _contiene_emoji(texto):
