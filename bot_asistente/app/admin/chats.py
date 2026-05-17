@@ -78,7 +78,7 @@ async def lista_chats(
         select(Cliente, subq.c.ultima_ts, subq.c.total_msgs)
         .join(subq, subq.c.cliente_id == Cliente.id)
         .order_by(desc(subq.c.ultima_ts))
-        .limit(200)
+        .limit(500)
     )
     rows = (await session.execute(stmt)).all()
 
@@ -110,8 +110,15 @@ async def lista_chats(
         bloqueado_badge = '<span class="badge badge-blocked">bloqueado</span>' if cliente.bloqueado else ''
         admin_badge = '<span class="badge badge-admin">ADMIN</span>' if cliente.numero_whatsapp in admins_numeros else ''
 
+        # data-search: campo concatenado lowercase para filtrado client-side
+        search_blob = " ".join([
+            (cliente.nombre or "").lower(),
+            (cliente.numero_whatsapp or "").lower(),
+            # también sin el "+" para que "57301..." matchee
+            (cliente.numero_whatsapp or "").lstrip("+").lower(),
+        ])
         items_html.append(f"""
-        <a href="/admin/chats/{cliente.id}" class="chat-item">
+        <a href="/admin/chats/{cliente.id}" class="chat-item" data-search="{html.escape(search_blob)}">
           <div class="avatar">{html.escape(avatar_initial)}</div>
           <div class="chat-body">
             <div class="chat-top">
@@ -179,10 +186,47 @@ async def chat_cliente(
             if via == "equipo_admin":
                 autor = '<div class="msg-author">— enviado por equipo (via bot)</div>'
 
-        contenido = m.contenido or ""
+        contenido_texto = (m.contenido or "").strip()
+        # Texto base escapado (caption o nada)
+        if contenido_texto:
+            contenido_html = html.escape(contenido_texto).replace("\n", "<br>")
+        else:
+            contenido_html = ""
+
+        # Media inline (imagen/sticker/video). Las URLs de whapi son S3 público.
+        media_html = ""
         if m.media_url:
-            contenido = f"[{m.tipo or 'media'}] {contenido}".strip()
-        contenido_html = html.escape(contenido).replace("\n", "<br>")
+            url = html.escape(m.media_url)
+            tipo = m.tipo or "media"
+            if tipo == "imagen":
+                media_html = (
+                    f'<a href="{url}" target="_blank" rel="noopener">'
+                    f'<img class="msg-media" src="{url}" alt="imagen" loading="lazy"/>'
+                    f'</a>'
+                )
+            elif tipo == "sticker":
+                media_html = (
+                    f'<img class="msg-sticker" src="{url}" alt="sticker" loading="lazy"/>'
+                )
+            elif tipo == "video":
+                media_html = (
+                    f'<video class="msg-media" src="{url}" controls preload="metadata"></video>'
+                )
+            elif tipo in ("audio",):
+                media_html = (
+                    f'<audio class="msg-audio" src="{url}" controls preload="none"></audio>'
+                )
+            else:
+                # fallback: link descarga
+                media_html = (
+                    f'<a class="msg-file" href="{url}" target="_blank" rel="noopener">'
+                    f'📎 {html.escape(tipo)}</a>'
+                )
+        # Si NO hay media pero el contenido es vacío (mensaje raro), mostrar placeholder
+        if not media_html and not contenido_html:
+            contenido_html = f'<span style="color:var(--text-tertiary);font-style:italic;">[{html.escape(m.tipo or "vacío")}]</span>'
+
+        bubble_inner = media_html + contenido_html
 
         meta_parts = [_fmt_hora(m.timestamp)]
         if m.intent:
@@ -194,7 +238,7 @@ async def chat_cliente(
         burbujas.append(f"""
         <div class="msg msg-{side}">
           {autor}
-          <div class="msg-bubble">{contenido_html}</div>
+          <div class="msg-bubble">{bubble_inner}</div>
           <div class="msg-meta">{meta}</div>
         </div>
         """)
@@ -383,6 +427,16 @@ _CHATS_EXTRA_STYLES = """
   }
   .msg-in .msg-bubble { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
   .msg-out .msg-bubble { background: var(--chip-green-bg); color: var(--text-primary); border: 1px solid var(--chip-green-bg); border-bottom-right-radius: 4px; }
+  .msg-media {
+    max-width: 280px; max-height: 360px; display: block;
+    border-radius: 8px; margin: 2px 0; cursor: pointer;
+    background: var(--bg-soft);
+  }
+  .msg-media + br + *, .msg-bubble .msg-media + * { margin-top: 6px; display: block; }
+  .msg-sticker { width: 120px; height: 120px; display: block; }
+  .msg-audio { display: block; min-width: 220px; }
+  .msg-file { display: inline-block; color: var(--chip-blue); text-decoration: none; padding: 6px 10px;
+              background: var(--bg-soft); border-radius: 8px; }
   .msg-meta { font-size: 10px; color: var(--text-tertiary); margin-top: 3px; padding: 0 4px; }
   .msg-author { font-size: 10px; color: var(--text-tertiary); font-style: italic; margin-bottom: 2px; padding: 0 4px; }
 
@@ -413,6 +467,25 @@ _LISTA_TEMPLATE = """<!doctype html>
 <title>Chats — Laura</title>
 __SHELL_STYLES__
 __EXTRA_STYLES__
+<style>
+  .chat-search {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 14px;
+    box-shadow: var(--shadow-card);
+  }
+  .chat-search input {
+    flex: 1; border: none; outline: none; background: transparent;
+    color: var(--text-primary); font: inherit; font-size: 14px;
+  }
+  .chat-search .ico-search { color: var(--text-tertiary); }
+  .chat-search .filter-count { font-size: 12px; color: var(--text-tertiary); }
+  .chat-item.hidden { display: none !important; }
+  .empty-state {
+    text-align: center; padding: 40px 20px; color: var(--text-tertiary);
+    font-size: 14px;
+  }
+</style>
 </head><body>
 __ICON_SPRITE__
 <div class="app">
@@ -420,15 +493,51 @@ __ICON_SPRITE__
   <main class="main">
     <h1 class="page-title">Chats</h1>
     <p class="page-subtitle">{{total}} conversaciones activas · Para ver contactos importados sin conversación, abre <a href="/admin/cliente/list" style="color:var(--chip-blue);">Clientes</a>.</p>
-    <div class="chat-list">
+    <div class="chat-search">
+      <svg class="ico-search" width="16" height="16"><use href="#i-search"/></svg>
+      <input type="text" id="chat-filter" placeholder="Buscar por nombre o número (ej: Maria, 31550, +573...)" autofocus autocomplete="off"/>
+      <span class="filter-count" id="filter-count"></span>
+    </div>
+    <div class="chat-list" id="chat-list">
       {{items}}
     </div>
+    <div class="empty-state" id="empty-state" style="display:none;">No hay coincidencias.</div>
   </main>
 </div>
 __THEME_JS__
 <script>
-  // Auto-refresh cada 15s para ver chats nuevos
-  setTimeout(function(){ location.reload(); }, 15000);
+  // Buscador client-side por nombre o número (data-search en cada chat-item)
+  (function(){
+    var input = document.getElementById('chat-filter');
+    var items = Array.from(document.querySelectorAll('#chat-list .chat-item'));
+    var count = document.getElementById('filter-count');
+    var empty = document.getElementById('empty-state');
+    var TOTAL = items.length;
+    function filtrar() {
+      var q = (input.value || '').trim().toLowerCase();
+      var visibles = 0;
+      items.forEach(function(it){
+        var hay = it.getAttribute('data-search') || '';
+        var match = !q || hay.indexOf(q) !== -1;
+        it.classList.toggle('hidden', !match);
+        if (match) visibles++;
+      });
+      count.textContent = q ? (visibles + ' de ' + TOTAL) : '';
+      empty.style.display = (visibles === 0 && q) ? 'block' : 'none';
+    }
+    input.addEventListener('input', filtrar);
+    // Auto-refresh solo si NO se está escribiendo en el buscador
+    var lastInput = 0;
+    input.addEventListener('input', function(){ lastInput = Date.now(); });
+    setTimeout(function(){
+      if (Date.now() - lastInput > 5000 && document.activeElement !== input) {
+        location.reload();
+      } else {
+        // Reprogramar 5s más tarde si está activo
+        setTimeout(function(){ if (document.activeElement !== input) location.reload(); }, 5000);
+      }
+    }, 15000);
+  })();
 </script>
 </body></html>"""
 
