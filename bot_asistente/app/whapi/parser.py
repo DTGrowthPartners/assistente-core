@@ -34,6 +34,9 @@ class MensajeWhapi:
     quoted_message_id: str | None = None  # whapi id del mensaje citado
     quoted_content: str | None = None     # texto/caption del mensaje citado (preview)
     quoted_from_me: bool | None = None    # True si el mensaje citado lo envió el bot
+    # Pushname: nombre que el cliente configuró en su perfil de WhatsApp.
+    # Solo viene en inbound. Útil para conocer el nombre antes de que lo diga.
+    from_name: str | None = None
 
 
 # whapi payload events:
@@ -161,6 +164,13 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
         if not quoted_content:
             quoted_content = ctx.get("body") or ctx.get("text") or ctx.get("caption")
 
+    # Pushname (whapi lo manda como `from_name` solo en inbound de personas)
+    from_name = msg.get("from_name") if direccion == "inbound" else None
+    if isinstance(from_name, str):
+        from_name = from_name.strip() or None
+    else:
+        from_name = None
+
     return MensajeWhapi(
         id=str(msg_id),
         from_number=from_n,
@@ -179,6 +189,7 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
         quoted_message_id=str(quoted_id) if quoted_id else None,
         quoted_content=quoted_content,
         quoted_from_me=quoted_from_me,
+        from_name=from_name,
     )
 
 

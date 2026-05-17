@@ -46,17 +46,51 @@ async def get_or_create_cliente(
     numero: str,
     nombre: str | None = None,
 ) -> Cliente:
-    """Get-or-create por número de WhatsApp."""
+    """Get-or-create por número de WhatsApp.
+
+    Si el cliente ya existe pero no tiene `nombre` guardado y se pasa uno
+    nuevo (típicamente el pushname de WhatsApp), lo rellena. NUNCA
+    sobreescribe un nombre ya guardado — preserva ediciones manuales y
+    nombres reales que el cliente haya dado.
+    """
+    nombre_limpio = _limpiar_pushname(nombre)
     stmt = select(Cliente).where(Cliente.numero_whatsapp == numero)
     cliente = (await session.execute(stmt)).scalar_one_or_none()
     if cliente:
         cliente.ultimo_contacto = datetime.now(timezone.utc)
+        if nombre_limpio and not (cliente.nombre or "").strip():
+            cliente.nombre = nombre_limpio
         return cliente
 
-    cliente = Cliente(numero_whatsapp=numero, nombre=nombre)
+    cliente = Cliente(numero_whatsapp=numero, nombre=nombre_limpio)
     session.add(cliente)
     await session.flush()  # para tener el id
     return cliente
+
+
+_EMOJI_RE = __import__("re").compile(
+    "["
+    "\U0001F300-\U0001F9FF"
+    "\U0001FA00-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F000-\U0001F2FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "‍️"
+    "]+",
+    flags=__import__("re").UNICODE,
+)
+
+
+def _limpiar_pushname(raw: str | None) -> str | None:
+    """Pushname de whapi → string seguro para BD. None si queda vacío."""
+    if not raw:
+        return None
+    s = _EMOJI_RE.sub("", str(raw))
+    s = " ".join(s.split())  # colapsa espacios + trim
+    if not s:
+        return None
+    return s[:100]
 
 
 async def cliente_esta_bloqueado(session: AsyncSession, numero: str) -> bool:

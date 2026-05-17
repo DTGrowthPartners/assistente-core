@@ -327,7 +327,7 @@ async def webhook(
                 resultados.append({"id": msg.id, "status": "human_metadata_ignored"})
                 continue
 
-            cliente = await get_or_create_cliente(session, msg.from_number)
+            cliente = await get_or_create_cliente(session, msg.from_number, nombre=msg.from_name)
             await pausar_bot(session, cliente.id, horas=1, razon="asesora humana intervino")
             await guardar_conversacion(
                 session,
@@ -357,7 +357,7 @@ async def webhook(
         # Bot equipo (Fabio/Stiven) ya pasó la condición arriba, así que ellos
         # SÍ pueden seguir hablando con el bot (incluso para reactivarlo).
         if await _bot_global_pausado():
-            cliente = await get_or_create_cliente(session, msg.from_number)
+            cliente = await get_or_create_cliente(session, msg.from_number, nombre=msg.from_name)
             await guardar_conversacion(
                 session, cliente_id=cliente.id, direccion="inbound",
                 tipo=msg.tipo, contenido=msg.texto,
@@ -368,7 +368,7 @@ async def webhook(
             resultados.append({"id": msg.id, "status": "bot_global_pausado"})
             continue
 
-        cliente = await get_or_create_cliente(session, msg.from_number)
+        cliente = await get_or_create_cliente(session, msg.from_number, nombre=msg.from_name)
 
         # ¿Bot pausado por intervención humana?
         if settings.feature_human_takeover and await bot_pausado(session, cliente.id):
