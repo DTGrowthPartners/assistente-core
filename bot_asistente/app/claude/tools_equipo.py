@@ -167,6 +167,57 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "crear_pedido_manual",
+        "description": (
+            "Registra retroactivamente un pedido en la BD cuando la venta se "
+            "cerró conversacionalmente con un cliente (asesora humana) y NO "
+            "pasó por el flujo automático del bot. Útil cuando el admin dice "
+            "'ya cerré la venta de X, registrala' o 'el pago de Y ya entró, "
+            "confirma su pedido'. Devuelve el pedido_id creado. Para items, "
+            "pasa una lista de objetos {nombre, talla, color, precio, cantidad}."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "numero_cliente": {"type": "string", "description": "Número +57..."},
+                "items": {
+                    "type": "array",
+                    "description": "Lista de items del pedido",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "nombre": {"type": "string"},
+                            "ref": {"type": "string"},
+                            "talla": {"type": "string"},
+                            "color": {"type": "string"},
+                            "precio": {"type": "number"},
+                            "cantidad": {"type": "number"},
+                        },
+                        "required": ["nombre", "precio"],
+                    },
+                },
+                "subtotal": {"type": "number"},
+                "domicilio": {"type": "number", "description": "Valor del envío. 0 si lo cobra la transportadora al destinatario."},
+                "total": {"type": "number"},
+                "estado": {
+                    "type": "string",
+                    "description": "datos_completos|esperando_pago|confirmado|despachado|entregado",
+                    "default": "confirmado",
+                },
+                "direccion_envio": {"type": "string"},
+                "ciudad": {"type": "string"},
+                "barrio": {"type": "string"},
+                "metodo_pago": {"type": "string", "description": "contraentrega|transferencia_bancolombia|transferencia_nequi|consignacion|addi|otro"},
+                "banco": {"type": "string"},
+                "transportadora": {"type": "string", "description": "Coordinadora|Envia|Interrapidisimo|Servientrega|domicilio_local|etc."},
+                "cedula_cliente": {"type": "string"},
+                "email_cliente": {"type": "string"},
+                "notas": {"type": "string"},
+            },
+            "required": ["numero_cliente", "items", "total"],
+        },
+    },
+    {
         "name": "consultar_producto",
         "description": (
             "Busca un producto en el catálogo por referencia (ej. SD0017, "
@@ -388,6 +439,94 @@ async def handler_consultar_cliente(args: dict, ctx: dict) -> dict:
     }
 
 
+async def handler_crear_pedido_manual(args: dict, ctx: dict) -> dict:
+    """Registra retroactivamente un pedido cerrado vía conversación humana.
+
+    Idempotente: si ya hay un pedido del mismo cliente con mismo total en
+    los últimos 24h, devuelve el existente sin duplicar.
+    """
+    session: AsyncSession = ctx["session"]
+    numero = args["numero_cliente"]
+    total = float(args["total"])
+    items = args["items"]
+    if not items:
+        return {"creado": False, "error": "items vacío"}
+
+    cliente = await get_or_create_cliente(session, numero)
+
+    # Dedupe: pedido del mismo cliente con mismo total en últimas 24h
+    ventana = datetime.now(timezone.utc) - timedelta(hours=24)
+    existente = (await session.execute(
+        select(Pedido).where(
+            Pedido.cliente_id == cliente.id,
+            Pedido.total == total,
+            Pedido.created_at >= ventana,
+        ).order_by(Pedido.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    if existente:
+        return {
+            "creado": False,
+            "ya_existia_pedido_id": existente.id,
+            "estado_actual": existente.estado,
+            "razon": "Ya hay un pedido de este cliente con el mismo total en las últimas 24h",
+        }
+
+    cedula = (args.get("cedula_cliente") or "").strip()
+    cedula_digits = "".join(ch for ch in cedula if ch.isdigit()) or None
+    email = (args.get("email_cliente") or "").strip().lower() or None
+
+    pedido = Pedido(
+        cliente_id=cliente.id,
+        items=items,
+        subtotal=args.get("subtotal") or total,
+        domicilio=args.get("domicilio") or 0,
+        total=total,
+        estado=args.get("estado") or "confirmado",
+        direccion_envio=args.get("direccion_envio"),
+        ciudad=args.get("ciudad"),
+        barrio=args.get("barrio"),
+        metodo_pago=args.get("metodo_pago"),
+        banco=args.get("banco"),
+        cedula_cliente=cedula_digits,
+        email_cliente=email,
+        notas=(args.get("notas") or "")
+              + (f" [Transportadora: {args['transportadora']}]" if args.get("transportadora") else "")
+              + f" [Registrado retroactivamente por {ctx.get('miembro_nombre','equipo')}]",
+        confirmado_por_fabio_en=datetime.now(timezone.utc)
+            if (args.get("estado") or "confirmado") in ("confirmado", "despachado", "entregado")
+            else None,
+    )
+    session.add(pedido)
+    await session.flush()
+
+    # Backfill datos del cliente si faltan
+    if cedula_digits and not cliente.cedula:
+        cliente.cedula = cedula_digits
+    if email and not cliente.email:
+        cliente.email = email
+    if args.get("ciudad") and not cliente.ciudad:
+        cliente.ciudad = args["ciudad"]
+    if args.get("barrio") and not cliente.barrio:
+        cliente.barrio = args["barrio"]
+
+    log.info(
+        "tools_equipo.pedido_manual_creado",
+        pedido_id=pedido.id,
+        cliente_id=cliente.id,
+        total=total,
+        miembro=ctx.get("miembro_nombre"),
+    )
+
+    return {
+        "creado": True,
+        "pedido_id": pedido.id,
+        "cliente": numero,
+        "total": total,
+        "estado": pedido.estado,
+        "items_count": len(items),
+    }
+
+
 async def handler_consultar_chat_cliente(args: dict, ctx: dict) -> dict:
     """Trae los últimos N mensajes del chat del cliente para que el bot equipo
     pueda informar al admin del estado real de la conversación."""
@@ -566,6 +705,7 @@ HANDLERS_EQUIPO: dict[str, Handler] = {
     "consultar_pedidos": handler_consultar_pedidos,
     "consultar_cliente": handler_consultar_cliente,
     "consultar_chat_cliente": handler_consultar_chat_cliente,
+    "crear_pedido_manual": handler_crear_pedido_manual,
     "consultar_producto": handler_consultar_producto,
     "pausar_bot_global": handler_pausar_bot_global,
     "reanudar_bot_global": handler_reanudar_bot_global,
