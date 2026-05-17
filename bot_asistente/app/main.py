@@ -381,10 +381,11 @@ document.addEventListener("DOMContentLoaded", function() {{
     document.body.classList.add("no-shell");
     return;
   }}
-  if (document.querySelector("aside.sidebar.injected")) {{
-    document.body.classList.add("with-injected-sidebar");
-    return;
-  }}
+  // Si la página ya trae su propio sidebar (dashboard/chats que usan el
+  // template inline con __SIDEBAR__), NO inyectamos nada — ya tienen su
+  // layout .app grid completo. Solo aplica para vistas SQLAdmin.
+  if (document.querySelector("aside.sidebar")) return;
+
   var html = `{sidebar_js_safe}`;
   var t = document.createElement("template");
   t.innerHTML = html.trim();
