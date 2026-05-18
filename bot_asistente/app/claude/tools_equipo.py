@@ -30,10 +30,17 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
     {
         "name": "responder_a_cliente",
         "description": (
-            "Envía un mensaje al WhatsApp de un cliente específico. Usar cuando "
-            "el miembro del equipo te pide 'dile a X que...' o 'responde al "
-            "cliente Y'. Identifica el número por el contexto de alertas si "
-            "te dan solo el nombre."
+            "Envía un mensaje al WhatsApp de un cliente. Usar cuando el admin "
+            "dice 'dile a X...', 'responde al cliente Y...', 'continúa la "
+            "conversación con Z'. Identifica el número por el contexto si te "
+            "dan solo el nombre.\n\n"
+            "IMPORTANTE — `pausar_chat`:\n"
+            "- Por defecto FALSE: el bot Laura sigue respondiendo automáticamente "
+            "  cuando el cliente conteste. Es lo que el admin quiere casi siempre.\n"
+            "- Solo TRUE si el admin dice EXPLÍCITAMENTE algo como 'yo sigo el "
+            "  chat', 'no le contestes más, lo manejo yo', 'tomo yo esta "
+            "  conversación', o si la situación es muy delicada y el admin "
+            "  necesita pleno control."
         ),
         "input_schema": {
             "type": "object",
@@ -46,6 +53,15 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
                 "mensaje": {
                     "type": "string",
                     "description": "Texto a enviarle al cliente. Tono cálido, sin emojis.",
+                },
+                "pausar_chat": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Si TRUE, pausa Laura 1h para este cliente (admin toma "
+                        "el control). Default FALSE: Laura sigue respondiendo "
+                        "cuando el cliente conteste."
+                    ),
                 },
             },
         },
@@ -173,8 +189,10 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
             "referencia (ej INN5658, SD0017) en el catálogo y manda su imagen "
             "por WhatsApp con un caption opcional. ÚSALO cuando el admin diga "
             "cosas como 'envíale las fotos de las bermudas X, Y, Z'. Puedes "
-            "llamarla varias veces (una por foto) si son varias prendas. "
-            "También pausa el bot principal 1h para ese cliente."
+            "llamarla varias veces (una por foto) si son varias prendas.\n\n"
+            "Por defecto NO pausa el bot — Laura sigue respondiendo cuando el "
+            "cliente conteste. Solo pasa `pausar_chat=true` si el admin dijo "
+            "que él va a manejar la conversación."
         ),
         "input_schema": {
             "type": "object",
@@ -182,6 +200,11 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
                 "numero_cliente": {"type": "string", "description": "Número +57..."},
                 "ref": {"type": "string", "description": "Referencia del producto, ej INN5658"},
                 "caption": {"type": "string", "description": "Texto opcional bajo la foto (1-2 líneas)"},
+                "pausar_chat": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Si TRUE, pausa Laura 1h para este cliente. Default FALSE.",
+                },
             },
             "required": ["numero_cliente", "ref"],
         },
@@ -297,17 +320,16 @@ async def handler_responder_a_cliente(args: dict, ctx: dict) -> dict:
         },
     )
 
-    # Auto-pausar bot principal para ESTE cliente. Previene que el bot
-    # responda encima al mismo cliente con info contradictoria mientras
-    # el admin lleva la conversación. La pausa expira a la hora si no hay
-    # más intervención. Si el admin termina antes, puede reactivar Laura
-    # desde /admin/chats/{cliente_id} → botón "Reactivar Laura".
-    await pausar_bot(
-        session,
-        cliente_id=cliente.id,
-        horas=1,
-        razon=f"admin {ctx.get('miembro_nombre','equipo')} respondió vía bot equipo",
-    )
+    # Pausa OPCIONAL: solo si el admin lo pidió explícitamente vía pausar_chat.
+    # Default False — Laura sigue respondiendo automáticamente.
+    pausar = bool(args.get("pausar_chat", False))
+    if pausar:
+        await pausar_bot(
+            session,
+            cliente_id=cliente.id,
+            horas=1,
+            razon=f"admin {ctx.get('miembro_nombre','equipo')} tomó el chat vía bot equipo",
+        )
 
     # Resolver alertas abiertas del mismo cliente (asumimos que al responder
     # el admin está cerrando el ciclo de duda). Si necesita escalar otra cosa
@@ -327,7 +349,7 @@ async def handler_responder_a_cliente(args: dict, ctx: dict) -> dict:
         "enviado": True,
         "cliente": numero,
         "preview": mensaje[:80] + ("..." if len(mensaje) > 80 else ""),
-        "bot_pausado_1h": True,
+        "bot_pausado": pausar,
         "alertas_resueltas": ids_cerradas,
     }
 
@@ -508,22 +530,24 @@ async def handler_enviar_foto_producto_a_cliente(args: dict, ctx: dict) -> dict:
         },
     )
 
-    # Pausar bot principal 1h para este cliente
-    await pausar_bot(
-        session,
-        cliente_id=cliente.id,
-        horas=1,
-        razon=f"admin {ctx.get('miembro_nombre','equipo')} envió foto producto vía bot equipo",
-    )
+    # Pausa OPCIONAL — solo si el admin pidió tomar el control
+    pausar = bool(args.get("pausar_chat", False))
+    if pausar:
+        await pausar_bot(
+            session,
+            cliente_id=cliente.id,
+            horas=1,
+            razon=f"admin {ctx.get('miembro_nombre','equipo')} tomó el chat vía bot equipo (foto)",
+        )
 
-    log.info("tools_equipo.foto_producto.enviada", ref=ref, numero=numero, cliente_id=cliente.id)
+    log.info("tools_equipo.foto_producto.enviada", ref=ref, numero=numero, cliente_id=cliente.id, pausado=pausar)
 
     return {
         "enviado": True,
         "ref": ref,
         "cliente": numero,
         "precio": float(prod.precio_detal) if prod.precio_detal else None,
-        "bot_pausado_1h": True,
+        "bot_pausado": pausar,
     }
 
 
