@@ -179,12 +179,19 @@ async def chat_cliente(
 
         side = "out" if m.direccion in ("outbound", "humano") else "in"
         autor = ""
+        meta_dict = m.metadata_ or {}
         if m.direccion == "humano":
-            autor = '<div class="msg-author">— asesora humana</div>'
+            autor = '<div class="msg-author">👤 asesora humana (WhatsApp directo)</div>'
         elif m.direccion == "outbound":
-            via = (m.metadata_ or {}).get("via")
+            via = meta_dict.get("via")
+            miembro = meta_dict.get("miembro_equipo") or meta_dict.get("miembro")
             if via == "equipo_admin":
-                autor = '<div class="msg-author">— enviado por equipo (via bot)</div>'
+                etiqueta = f"vía admin ({miembro})" if miembro else "vía bot equipo"
+                autor = f'<div class="msg-author">🧑‍💼 {html.escape(etiqueta)}</div>'
+            elif (m.modelo or "").startswith("claude"):
+                autor = '<div class="msg-author">🤖 Laura (bot)</div>'
+            else:
+                autor = '<div class="msg-author">🤖 bot</div>'
 
         contenido_texto = (m.contenido or "").strip()
         # Texto base escapado (caption o nada)

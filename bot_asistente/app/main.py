@@ -175,6 +175,16 @@ def _build_admin_inject() -> str:
   body > .page { display: block !important; min-height: auto !important; }
   body > .page > .page-wrapper { margin-left: 0 !important; padding-top: 0 !important; }
 
+  /* Tabler aplica .page-wrapper { margin-left: 15rem } para acomodar su
+     navbar-vertical de 15rem. Como ocultamos ese navbar, el margin queda
+     como hueco en blanco (240px extra) entre nuestro sidebar y el
+     contenido. Anulamos los margins horizontales del page-wrapper en
+     cualquier nivel. */
+  .page-wrapper { margin-left: 0 !important; margin-right: 0 !important; }
+  body > .page-wrapper { padding: 16px 24px !important; }
+  .page-header { padding: 16px 0 8px !important; margin-bottom: 0 !important; }
+  .page-body { padding-top: 8px !important; }
+
   /* Fondo correcto en todas las vistas */
   body, .page, .page-wrapper, .page-body, .page-header {
     background: var(--bg-canvas) !important;
