@@ -92,8 +92,8 @@ async def vista_stories(
         select(ProductoCache)
         .where(ProductoCache.activo.is_(True))
         .where(ProductoCache.imagen_url.is_not(None))
-        .order_by(desc(ProductoCache.id))
-        .limit(50)
+        .order_by(ProductoCache.nombre)
+        .limit(80)
     )).scalars().all()
 
     flash = ""
