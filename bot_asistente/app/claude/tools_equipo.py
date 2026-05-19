@@ -128,6 +128,24 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
         },
     },
     {
+        "name": "consultar_chats_sin_responder",
+        "description": (
+            "Lista los chats donde el ÚLTIMO mensaje fue del cliente (inbound) "
+            "y nadie le ha respondido todavía (ni el bot ni una asesora). Es "
+            "decir, clientes esperando respuesta. ÚSALO cuando el admin pregunte "
+            "'tienes mensajes pendientes', 'qué chats sin contestar tengo', "
+            "'qué falta', 'a quién le debo respuesta'. Ordena por antigüedad "
+            "(el más viejo primero, urgente)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_resultados": {"type": "integer", "description": "Default 15", "default": 15},
+                "horas_max": {"type": "integer", "description": "Solo chats con último msg en últimas N horas (default 48)", "default": 48},
+            },
+        },
+    },
+    {
         "name": "consultar_chat_cliente",
         "description": (
             "Lee el historial reciente del chat de un cliente (inbound, outbound "
@@ -639,6 +657,44 @@ async def handler_crear_pedido_manual(args: dict, ctx: dict) -> dict:
     }
 
 
+async def handler_consultar_chats_sin_responder(args: dict, ctx: dict) -> dict:
+    """Lista chats donde el último mensaje es del cliente (esperando respuesta)."""
+    session: AsyncSession = ctx["session"]
+    max_resultados = int(args.get("max_resultados") or 15)
+    horas_max = int(args.get("horas_max") or 48)
+    from sqlalchemy import text as sa_text
+    rows = (await session.execute(sa_text("""
+        WITH ultimo_por_cliente AS (
+            SELECT DISTINCT ON (cliente_id)
+                cliente_id, direccion, contenido, timestamp, tipo
+            FROM conversaciones
+            WHERE timestamp > NOW() - (:horas || ' hours')::interval
+            ORDER BY cliente_id, timestamp DESC
+        )
+        SELECT u.cliente_id, c.numero_whatsapp, c.nombre, u.timestamp, u.tipo,
+               LEFT(u.contenido, 200), c.bloqueado
+        FROM ultimo_por_cliente u
+        JOIN clientes c ON c.id = u.cliente_id
+        WHERE u.direccion = 'inbound'
+          AND c.bloqueado = false
+        ORDER BY u.timestamp ASC
+        LIMIT :lim
+    """), {"horas": str(horas_max), "lim": max_resultados})).fetchall()
+
+    chats = [
+        {
+            "cliente_id": r[0],
+            "numero": r[1],
+            "nombre": r[2] or "(sin nombre)",
+            "ultimo_mensaje_ts": r[3].isoformat() if r[3] else None,
+            "tipo_ultimo": r[4],
+            "preview": (r[5] or "[media]").strip()[:200],
+        }
+        for r in rows
+    ]
+    return {"total": len(chats), "chats": chats, "horas_max": horas_max}
+
+
 async def handler_consultar_chat_cliente(args: dict, ctx: dict) -> dict:
     """Trae los últimos N mensajes del chat del cliente para que el bot equipo
     pueda informar al admin del estado real de la conversación."""
@@ -817,6 +873,7 @@ HANDLERS_EQUIPO: dict[str, Handler] = {
     "consultar_pedidos": handler_consultar_pedidos,
     "consultar_cliente": handler_consultar_cliente,
     "consultar_chat_cliente": handler_consultar_chat_cliente,
+    "consultar_chats_sin_responder": handler_consultar_chats_sin_responder,
     "crear_pedido_manual": handler_crear_pedido_manual,
     "enviar_foto_producto_a_cliente": handler_enviar_foto_producto_a_cliente,
     "consultar_producto": handler_consultar_producto,

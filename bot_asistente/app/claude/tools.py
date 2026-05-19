@@ -920,44 +920,60 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
     prefijo = cfg.get("prefijo_mensajes_fabio", "[BOT ASISTENTE]")
     enviar_real = cfg.get("enviar_mensaje_real", True)
 
-    # Dedupe: SI ya existe alerta ABIERTA (no resuelta) del mismo tipo para
-    # este cliente en las últimas 6h, NO escalar de nuevo. El cliente puede
-    # repreguntar lo mismo de muchas formas; cada repregunta NO debe disparar
-    # otra notificación al equipo. El bot principal usará el return para
-    # contestar "ya estamos revisando, dame un momento".
+    # Dedupe: NO escalar si ya hay alerta abierta O alerta resuelta reciente
+    # del mismo tipo para este cliente. Si está abierta → el equipo ya sabe,
+    # solo decir "estamos verificando". Si está resuelta → el admin ya dio la
+    # info por el chat humano y está en el historial; el bot debe USAR ESA INFO
+    # y NO volver a escalar.
     #
-    # Ventana 6h (no 5min como antes) — los admins pueden tardar en responder
-    # y mientras tanto el cliente sigue insistiendo; no queremos spam.
+    # Ventana 12h para resueltas (alertas viejas no aplican),
+    # 6h para abiertas (los admins pueden tardar en responder).
     if cliente_id:
-        ventana = datetime.now(timezone.utc) - timedelta(hours=6)
+        v_abierta = datetime.now(timezone.utc) - timedelta(hours=6)
+        v_resuelta = datetime.now(timezone.utc) - timedelta(hours=12)
         existente = (await session.execute(
             select(AlertaFabio).where(
                 AlertaFabio.cliente_id == cliente_id,
                 AlertaFabio.tipo == args["tipo"],
-                AlertaFabio.resuelto.is_(False),
-                AlertaFabio.created_at >= ventana,
+                (
+                    (AlertaFabio.resuelto.is_(False) & (AlertaFabio.created_at >= v_abierta))
+                    | (AlertaFabio.resuelto.is_(True) & (AlertaFabio.created_at >= v_resuelta))
+                ),
             ).order_by(AlertaFabio.id.desc()).limit(1)
         )).scalar_one_or_none()
         if existente:
+            ya_resuelta = bool(existente.resuelto)
             log.info(
                 "tools.escalar.dedupe_skip",
                 cliente_id=cliente_id,
                 tipo=args["tipo"],
                 alerta_existente_id=existente.id,
-                minutos_desde_alerta=int(
-                    (datetime.now(timezone.utc) - existente.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60
-                ) if existente.created_at else None,
+                ya_resuelta=ya_resuelta,
             )
+            if ya_resuelta:
+                razon = (
+                    "El admin ya respondió a una consulta similar hace poco "
+                    "(alerta resuelta hace menos de 12h). Esa respuesta está "
+                    "en el historial reciente del cliente (busca mensajes "
+                    "anteriores tuyos o de la asesora). USA ESA INFO para "
+                    "contestar — NO vuelvas a escalar al equipo. Si el "
+                    "cliente pregunta por precio/talla que el admin ya "
+                    "confirmó, repite lo confirmado y avanza al siguiente "
+                    "paso (datos, pago, dirección)."
+                )
+            else:
+                razon = (
+                    "Ya hay una alerta ABIERTA con el equipo sobre este tema "
+                    "para este cliente. NO crear otra. Dile al cliente: 'Ya "
+                    "estamos verificando con el equipo, en cuanto tengamos "
+                    "la información te confirmo. Gracias por la paciencia.' "
+                    "— y NO digas que vas a escalar otra vez."
+                )
             return {
                 "escalado": False,
-                "razon": (
-                    "Ya hay una alerta ABIERTA con el equipo sobre este tema "
-                    "para este cliente. NO crear otra. Al cliente dile algo "
-                    "como: 'Ya estamos verificando con el equipo, en cuanto "
-                    "tengamos la información te confirmo. Gracias por la "
-                    "paciencia.' — y NO digas que vas a escalar otra vez."
-                ),
+                "razon": razon,
                 "alerta_existente_id": existente.id,
+                "alerta_resuelta": ya_resuelta,
                 "tipo": args["tipo"],
             }
 
