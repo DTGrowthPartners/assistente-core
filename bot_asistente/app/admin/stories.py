@@ -30,6 +30,7 @@ from app.db.models import ProductoCache
 from app.db.session import get_session
 from app.logging_setup import log
 from app.whapi.client import (
+    eliminar_mensaje,
     publicar_story_imagen_bytes,
     publicar_story_imagen_url,
     publicar_story_texto,
@@ -125,6 +126,10 @@ async def vista_stories(
             <div class="story-caption">{html.escape(cap_short)}</div>
             <div class="story-meta">por {html.escape(por or '-')}</div>
           </div>
+          <form method="POST" action="/admin/stories/eliminar/{id_}" class="story-del-form"
+                onsubmit="return confirm('¿Eliminar este estado? Se borra también del WhatsApp si aún está vigente.');">
+            <button type="submit" class="btn-del" title="Eliminar">×</button>
+          </form>
         </div>""")
     historial_html = "".join(items_html) or '<div class="empty">Aún no has publicado ningún estado.</div>'
 
@@ -240,6 +245,35 @@ async def publicar_producto(
     return RedirectResponse("/admin/stories?msg=ok", 303)
 
 
+@router.post("/eliminar/{story_id}")
+async def eliminar_story(
+    story_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    if not _check_auth(request):
+        raise HTTPException(401)
+    row = (await session.execute(sa_text(
+        "SELECT whapi_message_id FROM story_publicado WHERE id = :i"
+    ), {"i": story_id})).first()
+    if not row:
+        return RedirectResponse("/admin/stories?msg=fail&err=story+no+encontrado", 303)
+    whapi_id = row[0]
+    whapi_msg = ""
+    # Intentar borrar de whapi (puede fallar si ya expiró o el id no existe — no es crítico)
+    if whapi_id:
+        try:
+            await eliminar_mensaje(whapi_id)
+        except Exception as e:
+            whapi_msg = "+(no+se+pudo+borrar+de+WA+—+puede+haber+expirado)"
+            log.warning("admin.story.eliminar.whapi_fail", id=story_id, error=str(e))
+    # Borrar del histórico BD
+    await session.execute(sa_text("DELETE FROM story_publicado WHERE id = :i"), {"i": story_id})
+    await session.commit()
+    log.info("admin.story.eliminada", id=story_id, whapi_id=whapi_id)
+    return RedirectResponse(f"/admin/stories?msg=ok{whapi_msg}", 303)
+
+
 async def _registrar(
     session: AsyncSession,
     *,
@@ -315,6 +349,15 @@ __SHELL_STYLES__
                 font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
   .empty { padding: 28px; text-align: center; color: var(--text-tertiary); font-size: 13px;
            background: var(--bg-card); border: 1px dashed var(--border); border-radius: 12px; }
+  .story-del-form { margin: 0; }
+  .btn-del {
+    width: 28px; height: 28px; border-radius: 6px;
+    background: var(--accent-negative-bg); color: var(--accent-negative);
+    border: 1px solid transparent; cursor: pointer; font-size: 18px; line-height: 1;
+    padding: 0; display: grid; place-items: center;
+    flex-shrink: 0; align-self: flex-start;
+  }
+  .btn-del:hover { background: var(--accent-negative); color: #fff; }
 </style>
 </head><body>
 __ICON_SPRITE__

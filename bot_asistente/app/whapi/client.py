@@ -210,3 +210,14 @@ async def listar_stories(count: int = 30) -> dict[str, Any]:
         if r.status_code >= 400:
             raise WhapiError(f"listar_stories: {r.status_code} {r.text}")
         return r.json()
+
+
+async def eliminar_mensaje(message_id: str) -> dict[str, Any]:
+    """DELETE /messages/{id} — borra un mensaje (sirve también para stories
+    porque internamente son mensajes con chat_id='stories')."""
+    url = f"{settings.whapi_base_url}/messages/{message_id}"
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.delete(url, headers=_headers())
+        if r.status_code >= 400:
+            raise WhapiError(f"eliminar_mensaje: {r.status_code} {r.text}")
+        return r.json()
