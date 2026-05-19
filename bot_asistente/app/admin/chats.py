@@ -281,12 +281,30 @@ async def chat_cliente(
             </button>
           </form>
         </div>"""
+    else:
+        # Sin pausa activa → ofrecer botón para pausar manualmente
+        pausa_banner = f"""
+        <div style="background:var(--bg-card);border:1px solid var(--border);
+                    border-radius:8px;padding:8px 14px;margin-bottom:12px;
+                    display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;">
+          <div style="color:var(--text-secondary);">
+            <strong style="color:var(--accent-positive);">Laura activa.</strong>
+            Responderá automáticamente cuando el cliente escriba.
+          </div>
+          <form method="POST" action="/admin/actions/cliente/{cliente_id}/pausar-laura" style="margin:0;">
+            <button type="submit" class="btn-ghost" style="border:1px solid var(--accent-negative);color:var(--accent-negative);">
+              Pausar Laura 1h
+            </button>
+          </form>
+        </div>"""
 
     flash = ""
     if request.query_params.get("msg") == "sent_ok":
         flash = '<div class="flash">Mensaje enviado. Laura queda pausada 1 hora para que tú manejes la conversación.</div>'
     elif request.query_params.get("msg") == "reactivado":
         flash = '<div class="flash">Laura reactivada. Ya responderá al cliente automáticamente.</div>'
+    elif request.query_params.get("msg") == "pausado":
+        flash = '<div class="flash">Laura pausada 1h en este chat. No responderá hasta que la reactives o pase la hora.</div>'
 
     # El pausa banner se inyecta arriba del thread reusando el placeholder de flash
     flash = pausa_banner + flash

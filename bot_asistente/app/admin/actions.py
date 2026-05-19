@@ -108,6 +108,29 @@ async def bloquear_cliente(
     return RedirectResponse(f"/admin/cliente/details/{cliente_id}", status_code=303)
 
 
+@router.post("/cliente/{cliente_id}/pausar-laura")
+async def pausar_laura_manual(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Pausa Laura 1h para este cliente sin enviar mensaje. Toggle manual
+    desde la vista de chat: el admin decide que NO quiere que el bot
+    responda a este cliente por un rato (tomó el chat o no quiere bot)."""
+    if not _check_auth(request):
+        raise HTTPException(401)
+    from app.db.repos import pausar_bot
+    await pausar_bot(
+        session,
+        cliente_id=cliente_id,
+        horas=1,
+        razon="admin pausó manualmente desde /admin/chats",
+    )
+    await session.commit()
+    log.info("admin.cliente.pausar_laura_manual", cliente_id=cliente_id)
+    return RedirectResponse(f"/admin/chats/{cliente_id}?msg=pausado", status_code=303)
+
+
 @router.post("/cliente/{cliente_id}/reactivar-laura")
 async def reactivar_laura(
     cliente_id: int,
