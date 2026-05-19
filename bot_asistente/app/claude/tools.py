@@ -227,7 +227,10 @@ TOOL_DEFINITIONS: list[dict] = [
                     "type": "string",
                     "enum": ["comprobante_pago", "ref_desconocida", "queja",
                              "pedido_confirmado", "duda_mayorista", "duda_tela_calidad",
-                             "duda_envio", "duda_tecnica", "otro"],
+                             "duda_envio", "duda_tecnica", "pregunta_devolucion",
+                             "devolucion", "cambio_producto", "reclamo_envio",
+                             "numero_guia", "traslado_interno", "consulta_admin",
+                             "otro"],
                 },
                 "area": {
                     "type": "string",
