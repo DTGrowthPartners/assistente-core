@@ -255,7 +255,8 @@ async def dashboard_html(request: Request):
             '<p>No autenticado. <a href="/admin/login">Login</a></p>',
             status_code=401,
         )
-    return HTMLResponse(_TEMPLATE_DASHBOARD)
+    html = _TEMPLATE_DASHBOARD.replace("__SIDEBAR__", sidebar_html(active="dashboard"))
+    return HTMLResponse(html)
 
 
 _TEMPLATE_DASHBOARD = r"""<!doctype html>
@@ -603,42 +604,8 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
 </svg>
 
 <div class="app">
-  <!-- ============ SIDEBAR ============ -->
-  <aside class="sidebar">
-    <div class="brand">
-      <div class="brand-logo">L</div>
-      <div class="brand-name">Laura · Innovación</div>
-    </div>
-
-    <button class="new-btn" onclick="location.href='/admin/chats'">+ Ver chats</button>
-
-    <nav class="nav-group">
-      <a class="nav-item active" href="/admin/dashboard"><svg class="ico" width="16" height="16"><use href="#i-dashboard"/></svg> Dashboard</a>
-      <a class="nav-item" href="/admin/chats"><svg class="ico" width="16" height="16"><use href="#i-messages"/></svg> Chats</a>
-      <a class="nav-item" href="/admin/cliente/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> Clientes</a>
-      <a class="nav-item" href="/admin/pedido/list"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg> Pedidos</a>
-      <a class="nav-item" href="/admin/alerta-fabio/list"><svg class="ico" width="16" height="16"><use href="#i-alert"/></svg> Alertas</a>
-    </nav>
-
-    <div class="nav-group">
-      <div class="nav-group-label">Equipo</div>
-      <a class="nav-item" href="/admin/equipo-miembro/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> Administradores</a>
-      <a class="nav-item" href="/admin/numero-interno/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> Números internos</a>
-    </div>
-
-    <div class="nav-group">
-      <div class="nav-group-label">Catálogo</div>
-      <a class="nav-item" href="/admin/producto-cache/list"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg> Productos</a>
-      <a class="nav-item" href="/admin/tarifa-domicilio/list"><svg class="ico" width="16" height="16"><use href="#i-money"/></svg> Tarifas envío</a>
-    </div>
-
-    <div class="nav-bottom">
-      <a class="nav-item" href="/admin"><svg class="ico" width="16" height="16"><use href="#i-settings"/></svg> Volver al admin</a>
-      <button class="nav-item" id="theme-toggle" style="background:transparent;border:none;width:100%;text-align:left;cursor:pointer;font:inherit;">
-        <svg class="ico" width="16" height="16"><use href="#i-theme"/></svg> <span id="theme-label">Modo oscuro</span>
-      </button>
-    </div>
-  </aside>
+  <!-- ============ SIDEBAR (placeholder sustituido con sidebar_html) ============ -->
+  __SIDEBAR__
 
   <!-- ============ MAIN ============ -->
   <main class="main">
