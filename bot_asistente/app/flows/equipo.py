@@ -199,6 +199,29 @@ async def procesar_mensaje_equipo(
         },
     ]
 
+    # Traer historial reciente del chat admin↔bot (últimos 12 turnos, 6h max).
+    # Esto evita que el bot equipo "pierda contexto" entre mensajes consecutivos
+    # del mismo admin — antes el flow procesaba cada msg como turn aislado.
+    from datetime import datetime, timedelta, timezone
+    ventana = datetime.now(timezone.utc) - timedelta(hours=6)
+    historial_db = (await session.execute(
+        select(Conversacion)
+        .where(Conversacion.cliente_id == cliente_proxy.id)
+        .where(Conversacion.timestamp >= ventana)
+        .order_by(Conversacion.timestamp.desc())
+        .limit(13)  # 12 turnos + el actual que acabamos de insertar (se excluye)
+    )).scalars().all()
+    historial_db = list(reversed(historial_db))[:-1]  # excluir el último (es el actual)
+
+    historial_msgs: list[dict] = []
+    for h in historial_db:
+        if not (h.contenido or "").strip():
+            continue
+        if h.direccion == "inbound":
+            historial_msgs.append({"role": "user", "content": h.contenido})
+        elif h.direccion in ("outbound", "humano"):
+            historial_msgs.append({"role": "assistant", "content": h.contenido})
+
     # Construir el primer user message (multimodal si hay imagen)
     if imagen_b64:
         user_content: list[dict] | str = [
@@ -214,7 +237,7 @@ async def procesar_mensaje_equipo(
         ]
     else:
         user_content = instruccion
-    messages = [{"role": "user", "content": user_content}]
+    messages = historial_msgs + [{"role": "user", "content": user_content}]
     ctx_tool = {
         "session": session,
         "miembro_nombre": miembro.nombre,

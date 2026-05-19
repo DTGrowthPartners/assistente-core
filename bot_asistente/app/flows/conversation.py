@@ -98,25 +98,29 @@ async def procesar_mensaje_inbound(
                 f"Su respuesta: {contenido_usuario}"
             )
 
-    # 1. Sesión + historial (hasta 24h, marcando mensajes >4h con separador)
+    # 1. Sesión + historial (hasta 30 mensajes, 48h max; separador suave si
+    # hay gap >12h indicando "el cliente vuelve después de un rato" pero
+    # SIN pedir resetear contexto — el bot DEBE seguir recordando talla,
+    # nombre, dirección, etc. que el cliente ya dio).
     sesion = await get_or_create_sesion(session, cliente_id)
-    historial_db = await ultimos_mensajes(session, cliente_id, n=20)
+    historial_db = await ultimos_mensajes(session, cliente_id, n=30, horas_max=48)
 
     ahora_utc = datetime.now(timezone.utc)
-    umbral_viejo = ahora_utc - timedelta(hours=4)
+    umbral_gap_largo = ahora_utc - timedelta(hours=12)
     historial_claude: list[dict] = []
     separador_insertado = False
     for h in historial_db[:-1]:  # excluimos el último (que es el actual inbound)
         ts = h.timestamp
         if ts and ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
-        # Si saltamos de mensajes >4h a mensajes recientes, inyectar un separador
-        # como user-message para que el modelo entienda el gap y NO asuma
-        # continuidad ("seguimos donde quedamos").
-        if not separador_insertado and ts and ts >= umbral_viejo and historial_claude:
+        # Separador SUAVE solo cuando hay gap >12h (no 4h como antes).
+        # Mantiene la continuidad sin pedirle al bot que "olvide" — el
+        # cliente probablemente está retomando una conversación previa
+        # y queremos que el bot use lo que ya sabe (nombre, talla, etc.).
+        if not separador_insertado and ts and ts >= umbral_gap_largo and historial_claude:
             historial_claude.append({
                 "role": "user",
-                "content": "[— Sistema: mensajes anteriores son de varias horas atrás. El cliente probablemente retoma el chat ahora. No asumas continuidad explícita; saluda brevemente si corresponde. —]",
+                "content": "[— Nota interna: pasaron varias horas desde el último mensaje. Saluda brevemente si corresponde y USA toda la info anterior del cliente (nombre, talla, dirección, productos discutidos) para continuar con coherencia. —]",
             })
             separador_insertado = True
         if h.direccion == "inbound" and h.contenido:
