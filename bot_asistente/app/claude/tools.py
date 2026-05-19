@@ -1024,6 +1024,30 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
                 bytes=len(inbound_bytes),
             )
 
+    # Auto-pausar el bot para este cliente cuando la escalación es del tipo
+    # que requiere intervención humana exclusiva (queja, comprobante de pago,
+    # devolución). El bot NO debe seguir respondiendo mensajes posteriores
+    # del cliente porque genera spam: el admin va a manejar el caso.
+    # Tipos no críticos (ref_desconocida, pregunta_mayorista) NO pausan.
+    TIPOS_AUTO_PAUSA = {"queja", "comprobante_pago", "pregunta_devolucion", "devolucion"}
+    auto_pausado = False
+    if cliente_id and args["tipo"] in TIPOS_AUTO_PAUSA:
+        from app.db.repos import pausar_bot
+        horas_pausa = 4 if args["tipo"] in ("queja", "pregunta_devolucion", "devolucion") else 2
+        await pausar_bot(
+            session,
+            cliente_id=cliente_id,
+            horas=horas_pausa,
+            razon=f"auto-pausa por escalación tipo {args['tipo']} — admin debe retomar",
+        )
+        auto_pausado = True
+        log.info(
+            "tools.escalar.auto_pausa",
+            cliente_id=cliente_id,
+            tipo=args["tipo"],
+            horas=horas_pausa,
+        )
+
     return {
         "escalado": True,
         "tipo": args["tipo"],
@@ -1031,6 +1055,13 @@ async def handler_escalar_a_equipo(args: dict, ctx: dict) -> dict:
         "responsables": [s.nombre for s in superiores],
         "notificado_whatsapp": f"encolado a {len(superiores)} admin(s) (sale después del commit)",
         "imagen_reenviada": imagen_reenviada,
+        "bot_auto_pausado": auto_pausado,
+        "nota_para_modelo": (
+            "Cliente quedó en pausa automática: NO sigas escribiendo mensajes "
+            "adicionales en este turno. Solo envía UN único mensaje breve "
+            "tipo 'Entiendo, ya pasé el caso al equipo y se comunicarán contigo. "
+            "Gracias por la paciencia.' y termina."
+        ) if auto_pausado else None,
     }
 
 
