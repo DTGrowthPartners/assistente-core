@@ -19,6 +19,7 @@ from app.admin.actions import router as actions_router
 from app.admin.auth import AdminAuth
 from app.admin.chats import router as chats_router
 from app.admin.dashboard import router as dashboard_router
+from app.admin.stories import router as stories_router
 from app.admin.views import ALL_VIEWS
 from app.config import get_settings
 from app.db.repos import (
@@ -108,6 +109,7 @@ app.mount(
 app.include_router(dashboard_router)
 app.include_router(actions_router)
 app.include_router(chats_router)
+app.include_router(stories_router)
 
 # SQLAdmin: CRUD automático sobre todos los modelos
 admin = Admin(

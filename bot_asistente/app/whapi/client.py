@@ -155,3 +155,58 @@ async def descargar_media(media_url: str, destino: str | Path) -> Path:
         r.raise_for_status()
         destino.write_bytes(r.content)
     return destino
+
+
+# ── Stories (estados de WhatsApp, 24h) ──────────────────────────────────────
+
+
+async def publicar_story_texto(caption: str) -> dict[str, Any]:
+    """Publica un story de SOLO texto."""
+    url = f"{settings.whapi_base_url}/stories/send/text"
+    payload = {"caption": caption}
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(url, json=payload, headers=_headers())
+        if r.status_code >= 400:
+            raise WhapiError(f"publicar_story_texto: {r.status_code} {r.text}")
+        return r.json()
+
+
+async def publicar_story_imagen_bytes(
+    image_bytes: bytes,
+    caption: str | None = None,
+    filename: str = "story.jpg",
+    mime: str = "image/jpeg",
+) -> dict[str, Any]:
+    """Publica una imagen como story via multipart upload."""
+    url = f"{settings.whapi_base_url}/stories/send/media"
+    files = {"media": (filename, image_bytes, mime)}
+    data = {}
+    if caption:
+        data["caption"] = caption
+    async with httpx.AsyncClient(timeout=60) as c:
+        r = await c.post(url, files=files, data=data, headers=_headers())
+        if r.status_code >= 400:
+            raise WhapiError(f"publicar_story_imagen_bytes: {r.status_code} {r.text}")
+        return r.json()
+
+
+async def publicar_story_imagen_url(image_url: str, caption: str | None = None) -> dict[str, Any]:
+    """Descarga la imagen desde URL y la publica como story (whapi no acepta
+    URLs externas directas en /stories/send/media — necesita multipart o
+    base64)."""
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(image_url)
+        r.raise_for_status()
+        image_bytes = r.content
+        mime = r.headers.get("content-type") or "image/jpeg"
+    return await publicar_story_imagen_bytes(image_bytes, caption=caption, mime=mime)
+
+
+async def listar_stories(count: int = 30) -> dict[str, Any]:
+    """GET /stories — lista stories publicados recientemente."""
+    url = f"{settings.whapi_base_url}/stories"
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(url, headers=_headers(), params={"count": count})
+        if r.status_code >= 400:
+            raise WhapiError(f"listar_stories: {r.status_code} {r.text}")
+        return r.json()
