@@ -24,9 +24,11 @@ Endpoints:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import delete, text as sa_text, update
+from sqlalchemy import delete, select, text as sa_text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -150,6 +152,66 @@ async def reactivar_laura(
     await session.commit()
     log.info("admin.cliente.reactivar_laura", cliente_id=cliente_id)
     return RedirectResponse(f"/admin/chats/{cliente_id}?msg=reactivado", status_code=303)
+
+
+@router.post("/cliente/{cliente_id}/marcar-interno")
+async def marcar_cliente_interno(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Marca el número del cliente como interno (bodega/asesora/sistema).
+
+    - INSERT/UPSERT en numeros_internos con activo=true
+    - Invalida cache del directorio (efecto <1s)
+    - Pausa el cliente 24h (cancela respuestas pendientes del humanizer)
+    """
+    if not _check_auth(request):
+        raise HTTPException(401)
+    cliente = (await session.execute(
+        select(Cliente).where(Cliente.id == cliente_id)
+    )).scalar_one_or_none()
+    if not cliente:
+        return RedirectResponse("/admin/chats?msg=cliente_no_existe", status_code=303)
+
+    nombre_default = cliente.nombre or "Número interno"
+    await session.execute(sa_text("""
+        INSERT INTO numeros_internos (numero_whatsapp, nombre, razon, activo)
+        VALUES (:n, :nom, :raz, true)
+        ON CONFLICT (numero_whatsapp) DO UPDATE
+        SET nombre = COALESCE(EXCLUDED.nombre, numeros_internos.nombre),
+            razon  = COALESCE(EXCLUDED.razon, numeros_internos.razon),
+            activo = true
+    """), {
+        "n": cliente.numero_whatsapp,
+        "nom": nombre_default,
+        "raz": "Marcado interno desde /admin/chats",
+    })
+
+    # Pausar 24h para cancelar respuestas pendientes en humanizer
+    hasta = datetime.now(timezone.utc) + timedelta(hours=24)
+    await session.execute(sa_text("""
+        INSERT INTO intervencion_humana (cliente_id, pausado_hasta, razon)
+        VALUES (:c, :h, :r)
+        ON CONFLICT (cliente_id) DO UPDATE
+        SET pausado_hasta = EXCLUDED.pausado_hasta, razon = EXCLUDED.razon
+    """), {"c": cliente_id, "h": hasta, "r": "marcado interno desde admin"})
+
+    await session.commit()
+
+    # Invalidar cache del directorio
+    try:
+        from app.equipo.directorio import invalidar_cache
+        invalidar_cache()
+    except Exception:
+        pass
+
+    log.info(
+        "admin.cliente.marcado_interno",
+        cliente_id=cliente_id,
+        numero=cliente.numero_whatsapp,
+    )
+    return RedirectResponse(f"/admin/chats/{cliente_id}?msg=marcado_interno", status_code=303)
 
 
 @router.post("/cliente/{cliente_id}/desbloquear")

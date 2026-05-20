@@ -303,6 +303,8 @@ async def chat_cliente(
         flash = '<div class="flash">Mensaje enviado. Laura queda pausada 1 hora para que tú manejes la conversación.</div>'
     elif request.query_params.get("msg") == "reactivado":
         flash = '<div class="flash">Laura reactivada. Ya responderá al cliente automáticamente.</div>'
+    elif request.query_params.get("msg") == "marcado_interno":
+        flash = '<div class="flash">Número marcado como interno. El bot ya no le responderá. Pausa de 24h aplicada para cancelar respuestas pendientes.</div>'
     elif request.query_params.get("msg") == "pausado":
         flash = '<div class="flash">Laura pausada 1h en este chat. No responderá hasta que la reactives o pase la hora.</div>'
 
@@ -430,6 +432,13 @@ _CHATS_EXTRA_STYLES = """
     font-size: 12px; font-weight: 500; background: var(--chip-blue-bg); color: var(--chip-blue);
   }
   .actions a.danger { background: var(--accent-negative-bg); color: var(--accent-negative); }
+  .actions .action-btn-internal {
+    display: inline-block; padding: 6px 12px; border-radius: 8px;
+    background: var(--chip-orange-bg); color: var(--chip-orange);
+    border: none; font: inherit; font-size: 12px; font-weight: 500;
+    cursor: pointer;
+  }
+  .actions .action-btn-internal:hover { opacity: .85; }
 
   .thread {
     background: var(--bg-soft); border-radius: 12px; padding: 18px 14px;
@@ -593,6 +602,11 @@ __ICON_SPRITE__
     </div>
     <div class="actions">
       <a href="/admin/cliente/details/{{cliente_id}}">Editar datos</a>
+      <form method="POST" action="/admin/actions/cliente/{{cliente_id}}/marcar-interno"
+            style="display:inline;margin:0;"
+            onsubmit="return confirm('Marcar +{{numero}} como número interno (bodega/asesora/sistema)? El bot dejará de responderle.');">
+        <button type="submit" class="action-btn-internal">Marcar como interno</button>
+      </form>
       <a href="/admin/actions/cliente/{{cliente_id}}/reset-form" class="danger">Resetear conversación</a>
       <a href="/admin/actions/cliente/{{cliente_id}}/nuke-form" class="danger">Eliminar cliente completo</a>
     </div>
