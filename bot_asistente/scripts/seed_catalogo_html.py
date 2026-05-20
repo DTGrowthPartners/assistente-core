@@ -416,16 +416,99 @@ def estrategia_d_texto_plano(soup: BeautifulSoup) -> list[ProductoHTML]:
     return unicos
 
 
+def estrategia_e_vue_innovacion(soup: BeautifulSoup) -> list[ProductoHTML]:
+    """Estrategia específica para el componente Vue actual de Innovación Fashion.
+
+    Cada producto vive como:
+
+        ✓ Seleccionado 🔍 NOMBRE REF
+        Tallas: 8 10 12 14 16 18
+        $70.000 COP
+        Mayor: $59.500 COP
+        Seleccionar Pedir ahora
+
+    La imagen correspondiente está dentro de un <img alt="NOMBRE">. Las
+    parseamos del DOM emparejando bloque-texto con su <img> vecino.
+    """
+    main = soup.find("main") or soup
+    text = main.get_text("\n", strip=True)
+    # Regex sobre el texto: nombre + ref + tallas + precio detal + precio mayor
+    # Permitimos que REF sea opcional (algunos productos solo tienen nombre).
+    patron = re.compile(
+        r"🔍\s*(?P<nombre>.+?)\s+(?P<ref>[A-Z]{2,5}-?\d{2,6})\s+"
+        r"Tallas:\s*(?P<tallas>[\d\sA-Za-z/,\-]+?)\s+"
+        r"\$\s*(?P<precio>\d{1,3}(?:[.,]\d{3})+)\s*COP"
+        r"(?:\s*Mayor:\s*\$\s*(?P<mayor>\d{1,3}(?:[.,]\d{3})+)\s*COP)?",
+        re.IGNORECASE,
+    )
+
+    # Mapa alt → src para emparejar imágenes con productos por alt
+    img_por_alt: dict[str, str] = {}
+    for img in main.find_all("img"):
+        alt = (img.get("alt") or "").strip()
+        src = img.get("src") or img.get("data-src") or ""
+        if not alt or not src:
+            continue
+        src = src.strip()
+        if src.startswith("//"):
+            src = "https:" + src
+        # Quedarse con la primera imagen para cada alt
+        if alt not in img_por_alt:
+            img_por_alt[alt] = src
+
+    productos: list[ProductoHTML] = []
+    for m in patron.finditer(text):
+        nombre = re.sub(r"\s+", " ", m.group("nombre")).strip()
+        ref = normalizar_ref(m.group("ref"))
+        tallas = extraer_tallas(m.group("tallas"))
+        precio = parsear_precio("$" + m.group("precio"))
+        mayor = parsear_precio("$" + m.group("mayor")) if m.group("mayor") else None
+        # Buscar imagen: probar match exacto, luego match por subcadena
+        imagen = img_por_alt.get(nombre)
+        if not imagen:
+            for alt, src in img_por_alt.items():
+                if nombre.lower() in alt.lower() or alt.lower() in nombre.lower():
+                    imagen = src
+                    break
+
+        productos.append(ProductoHTML(
+            ref=ref,
+            nombre=nombre,
+            precio_detal=precio,
+            precio_mayor=mayor,
+            tallas=tallas,
+            colores=extraer_colores(nombre),
+            imagen_url=imagen,
+        ))
+
+    # Dedupe por ref (mismo patrón usado en estrategia D)
+    vistos: set[str] = set()
+    unicos: list[ProductoHTML] = []
+    for p in productos:
+        if p.ref in vistos:
+            continue
+        vistos.add(p.ref)
+        unicos.append(p)
+    return unicos
+
+
 def extraer_productos(html: str) -> tuple[list[ProductoHTML], str]:
-    """Aplica las 4 estrategias en orden y retorna la primera con >=5 productos."""
+    """Aplica las 5 estrategias en orden y retorna la primera con >=5 productos.
+
+    Orden:
+      E primero (es la específica para Innovación, da el mejor resultado hoy).
+      A-D después como fallback por si la página cambia otra vez.
+    """
     soup = BeautifulSoup(html, "lxml")
 
-    for nombre_estrategia, fn in [
+    estrategias = [
+        ("E: Vue Innovación", lambda: estrategia_e_vue_innovacion(soup)),
         ("A: JSON-LD", lambda: estrategia_a_json_ld(soup)),
         ("B: Shopify window meta", lambda: estrategia_b_shopify_window(soup, html)),
         ("C: HTML cards heurística", lambda: estrategia_c_cards_html(soup)),
         ("D: Texto plano", lambda: estrategia_d_texto_plano(soup)),
-    ]:
+    ]
+    for nombre_estrategia, fn in estrategias:
         try:
             productos = fn()
         except Exception as e:
@@ -436,12 +519,7 @@ def extraer_productos(html: str) -> tuple[list[ProductoHTML], str]:
 
     # Si ninguna pasó el umbral, devolvemos la mejor
     todas: list[tuple[list[ProductoHTML], str]] = []
-    for nombre_estrategia, fn in [
-        ("A: JSON-LD", lambda: estrategia_a_json_ld(soup)),
-        ("B: Shopify window meta", lambda: estrategia_b_shopify_window(soup, html)),
-        ("C: HTML cards heurística", lambda: estrategia_c_cards_html(soup)),
-        ("D: Texto plano", lambda: estrategia_d_texto_plano(soup)),
-    ]:
+    for nombre_estrategia, fn in estrategias:
         try:
             todas.append((fn(), nombre_estrategia))
         except Exception:
