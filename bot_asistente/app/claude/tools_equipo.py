@@ -228,6 +228,28 @@ TOOL_DEFINITIONS_EQUIPO: list[dict] = [
         },
     },
     {
+        "name": "marcar_numero_interno",
+        "description": (
+            "Marca un número como INTERNO (bodega, asesora, sistema, etc.) "
+            "para que el bot Laura NUNCA le responda como si fuera cliente. "
+            "ÚSALO cuando el admin diga 'ignora a +57XXX', 'agrega a internos', "
+            "'ese número es de bodega', 'no le respondas más a X', etc. "
+            "Inserta en la tabla numeros_internos y refresca el cache para "
+            "que tome efecto en <1 segundo. Si ya existe, lo reactiva. "
+            "Bonus: pausa al cliente 24h para cancelar cualquier respuesta "
+            "pendiente del humanizer (delay 60-180s)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["numero"],
+            "properties": {
+                "numero": {"type": "string", "description": "Número E.164, ej +573004602945"},
+                "nombre": {"type": "string", "description": "Descripción ej 'Bodega Innovación Centro'"},
+                "razon": {"type": "string", "description": "Por qué se marca interno (queda en BD para auditoría)"},
+            },
+        },
+    },
+    {
         "name": "crear_pedido_manual",
         "description": (
             "Registra retroactivamente un pedido en la BD cuando la venta se "
@@ -641,6 +663,72 @@ async def handler_enviar_foto_producto_a_cliente(args: dict, ctx: dict) -> dict:
     }
 
 
+async def handler_marcar_numero_interno(args: dict, ctx: dict) -> dict:
+    """Marca un número como interno (bodega/asesora/sistema) y pausa 24h al
+    cliente para cancelar respuestas pendientes del humanizer."""
+    session: AsyncSession = ctx["session"]
+    numero = (args.get("numero") or "").strip()
+    if not numero:
+        return {"ok": False, "razon": "numero vacío"}
+    # Normalizar: asegurar prefijo +
+    if not numero.startswith("+"):
+        numero = "+" + numero.lstrip("+ ")
+
+    nombre = (args.get("nombre") or "").strip() or "Número interno (sin nombre)"
+    razon = (args.get("razon") or "").strip() or f"Marcado interno por {ctx.get('miembro_nombre','equipo')} via bot equipo"
+
+    from sqlalchemy import text as sa_text
+    res = await session.execute(sa_text("""
+        INSERT INTO numeros_internos (numero_whatsapp, nombre, razon, activo)
+        VALUES (:n, :nom, :raz, true)
+        ON CONFLICT (numero_whatsapp) DO UPDATE
+        SET nombre = COALESCE(EXCLUDED.nombre, numeros_internos.nombre),
+            razon = COALESCE(EXCLUDED.razon, numeros_internos.razon),
+            activo = true
+        RETURNING id
+    """), {"n": numero, "nom": nombre, "raz": razon})
+    row = res.fetchone()
+    interno_id = row[0] if row else None
+
+    # Invalidar cache del directorio para que tome efecto inmediato
+    try:
+        from app.equipo.directorio import invalidar_cache
+        invalidar_cache()
+    except Exception:
+        pass
+
+    # Pausar 24h al cliente si existe — esto cancela respuestas pendientes
+    # del humanizer que pudieran estar en cola.
+    cliente = (await session.execute(
+        select(Cliente).where(Cliente.numero_whatsapp == numero)
+    )).scalar_one_or_none()
+    pausa_aplicada = False
+    if cliente:
+        await pausar_bot(
+            session,
+            cliente_id=cliente.id,
+            horas=24,
+            razon=f"marcado como interno: {nombre}",
+        )
+        pausa_aplicada = True
+
+    log.info(
+        "tools_equipo.marcar_interno",
+        numero=numero,
+        interno_id=interno_id,
+        cliente_id=cliente.id if cliente else None,
+        miembro=ctx.get("miembro_nombre"),
+    )
+
+    return {
+        "ok": True,
+        "numero": numero,
+        "interno_id": interno_id,
+        "pausa_cliente_24h": pausa_aplicada,
+        "nota": "Cache del directorio invalidado. El bot dejará de responder a este número en menos de 1 segundo.",
+    }
+
+
 async def handler_crear_pedido_manual(args: dict, ctx: dict) -> dict:
     """Registra retroactivamente un pedido cerrado vía conversación humana.
 
@@ -953,6 +1041,7 @@ HANDLERS_EQUIPO: dict[str, Handler] = {
     "consultar_chat_cliente": handler_consultar_chat_cliente,
     "consultar_chats_sin_responder": handler_consultar_chats_sin_responder,
     "crear_pedido_manual": handler_crear_pedido_manual,
+    "marcar_numero_interno": handler_marcar_numero_interno,
     "enviar_foto_producto_a_cliente": handler_enviar_foto_producto_a_cliente,
     "consultar_producto": handler_consultar_producto,
     "pausar_bot_global": handler_pausar_bot_global,
