@@ -535,6 +535,17 @@ async def webhook(
             resultados.append({"id": msg.id, "status": "own_outbound_ignored"})
             continue
 
+        # 🚨 PRIORIDAD 1.5 — Mensajes de GRUPOS de WhatsApp.
+        # whapi marca grupos con chat_id terminado en @g.us. Si un admin o
+        # asesora escribe en un grupo del que Laura es miembro, NO debemos
+        # procesar — solo causaría confusión (responder por privado a algo
+        # que se dijo en grupo). Caso reportado: Fabio en grupo del equipo,
+        # bot le respondía Laura al chat privado.
+        if msg.chat_id and msg.chat_id.endswith("@g.us"):
+            log.info("webhook.grupo_ignorado", chat_id=msg.chat_id, from_=msg.from_number)
+            resultados.append({"id": msg.id, "status": "group_ignored"})
+            continue
+
         # ¿Es un MIEMBRO del equipo (Fabio o supervisor)? → flow equipo
         miembro = es_miembro_equipo(msg.from_number)
         if miembro:
