@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     whapi_numero_bot: str = "+573026041584"
     whapi_webhook_secret: str = Field(default="")
     whapi_webhook_url: str = "https://asistente.dtgrowthpartners.com/webhook"
+    # Grupo WhatsApp donde se notifican pedidos confirmados. Vacío = deshabilitado.
+    grupo_pedidos_confirmados_id: str = "120363425539154194@g.us"
 
     # ── Shopify ─────────────────────────────────────────────────────────────
     shopify_api_base_url: str = "https://innova.dtgrowthpartners.com/api"

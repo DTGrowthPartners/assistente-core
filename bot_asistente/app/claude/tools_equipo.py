@@ -372,6 +372,70 @@ async def handler_responder_a_cliente(args: dict, ctx: dict) -> dict:
     }
 
 
+async def _notificar_pedido_al_grupo(session: AsyncSession, pedido: Pedido) -> bool:
+    """Envía un mensaje al grupo configurado con el resumen del pedido confirmado.
+
+    Idempotente: si pedido.notificado_grupo_en ya está seteado, no hace nada.
+    Errores de whapi se loggean pero NO rompen el flujo del handler.
+    Devuelve True si envió, False si saltó o falló.
+    """
+    from app.config import get_settings
+    s = get_settings()
+    grupo = (s.grupo_pedidos_confirmados_id or "").strip()
+    if not grupo:
+        return False
+    if pedido.notificado_grupo_en:
+        return False  # ya notificado antes
+
+    # Resolver cliente (nombre + número)
+    cliente = (await session.execute(
+        select(Cliente).where(Cliente.id == pedido.cliente_id)
+    )).scalar_one_or_none()
+    nombre = (cliente.nombre if cliente else None) or "(sin nombre)"
+    numero = cliente.numero_whatsapp if cliente else "(?)"
+
+    # Resumen de items
+    items = pedido.items or []
+    lineas_items = []
+    for it in items[:5]:
+        ref = (it.get("ref") or "").strip()
+        nom = (it.get("nombre") or "").strip()
+        talla = it.get("talla") or ""
+        color = it.get("color") or ""
+        cant = it.get("cantidad") or 1
+        partes = [p for p in [f"{cant}x" if cant != 1 else None, ref or nom, f"T{talla}" if talla else None, color] if p]
+        lineas_items.append("- " + " ".join(partes))
+    if len(items) > 5:
+        lineas_items.append(f"- ... +{len(items) - 5} más")
+
+    envio = "—"
+    if pedido.ciudad:
+        envio = pedido.ciudad
+        if pedido.barrio:
+            envio += f" / {pedido.barrio}"
+
+    total_fmt = f"${int(pedido.total or 0):,}".replace(",", ".")
+    mensaje = (
+        f"PEDIDO CONFIRMADO  #{pedido.id}\n"
+        f"Cliente: {nombre} ({numero})\n"
+        f"Envío: {envio}\n"
+        f"Pago: {pedido.metodo_pago or '—'}\n"
+        f"Total: {total_fmt}\n"
+        + ("\n".join(lineas_items) if lineas_items else "")
+    )
+
+    try:
+        await enviar_texto(grupo, mensaje)
+    except Exception as e:
+        log.warning("tools_equipo.notif_grupo.fail", pedido_id=pedido.id, error=str(e))
+        return False
+
+    # Marcar notificado_grupo_en
+    pedido.notificado_grupo_en = datetime.now(timezone.utc)
+    log.info("tools_equipo.notif_grupo.ok", pedido_id=pedido.id, grupo=grupo)
+    return True
+
+
 async def handler_actualizar_pedido(args: dict, ctx: dict) -> dict:
     session: AsyncSession = ctx["session"]
     pedido_id = int(args["pedido_id"])
@@ -394,11 +458,19 @@ async def handler_actualizar_pedido(args: dict, ctx: dict) -> dict:
         update(Pedido).where(Pedido.id == pedido_id).values(**valores)
     )
 
+    # Notificar al grupo si pasó a confirmado (solo si no se había notificado antes)
+    notificado = False
+    if nuevo_estado == "confirmado" and estado_anterior != "confirmado":
+        # recargar el pedido con los valores nuevos
+        await session.refresh(pedido)
+        notificado = await _notificar_pedido_al_grupo(session, pedido)
+
     return {
         "actualizado": True,
         "pedido_id": pedido_id,
         "estado_anterior": estado_anterior,
         "estado_nuevo": nuevo_estado,
+        "notificado_al_grupo": notificado,
     }
 
 
@@ -647,6 +719,11 @@ async def handler_crear_pedido_manual(args: dict, ctx: dict) -> dict:
         miembro=ctx.get("miembro_nombre"),
     )
 
+    # Si el pedido nace ya confirmado/despachado/entregado, notificar al grupo
+    notificado = False
+    if pedido.estado in ("confirmado", "despachado", "entregado"):
+        notificado = await _notificar_pedido_al_grupo(session, pedido)
+
     return {
         "creado": True,
         "pedido_id": pedido.id,
@@ -654,6 +731,7 @@ async def handler_crear_pedido_manual(args: dict, ctx: dict) -> dict:
         "total": total,
         "estado": pedido.estado,
         "items_count": len(items),
+        "notificado_al_grupo": notificado,
     }
 
 

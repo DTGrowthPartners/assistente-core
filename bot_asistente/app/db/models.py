@@ -130,6 +130,7 @@ class Pedido(Base):
     notas: Mapped[str | None] = mapped_column(Text)
     notificado_a_fabio_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     confirmado_por_fabio_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notificado_grupo_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
