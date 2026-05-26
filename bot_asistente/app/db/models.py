@@ -224,3 +224,25 @@ class NumeroInterno(Base):
 
     def __str__(self) -> str:
         return f"{self.numero_whatsapp} — {self.nombre or '?'}"
+
+
+class TareaProgramada(Base):
+    """Tarea recurrente disparada por cron. Ejecutada por app.automatizaciones.scheduler."""
+    __tablename__ = "tareas_programadas"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nombre: Mapped[str] = mapped_column(String(120))
+    cron: Mapped[str] = mapped_column(String(60))  # ej "0 19 * * *"
+    zona_horaria: Mapped[str] = mapped_column(String(60), default="America/Bogota")
+    accion: Mapped[str] = mapped_column(String(60))  # ver acciones.py
+    parametros: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    ultima_ejecucion: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    proxima_ejecucion: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ultimo_resultado: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    creado_por: Mapped[str | None] = mapped_column(String(60))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __str__(self) -> str:
+        return f"{self.nombre} ({self.accion})"

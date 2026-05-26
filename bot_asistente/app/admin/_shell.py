@@ -281,6 +281,7 @@ def sidebar_html(active: str = "dashboard") -> str:
     <a class="{cls('productos')}" href="/admin/producto-cache/list"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg> <span>Productos</span></a>
     <a class="{cls('tarifas')}" href="/admin/tarifa-domicilio/list"><svg class="ico" width="16" height="16"><use href="#i-money"/></svg> <span>Tarifas envío</span></a>
     <a class="{cls('stories')}" href="/admin/stories"><svg class="ico" width="16" height="16"><use href="#i-spark"/></svg> <span>Estados WA</span></a>
+    <a class="{cls('automatizaciones')}" href="/admin/automatizaciones"><svg class="ico" width="16" height="16"><use href="#i-cal"/></svg> <span>Automatizaciones</span></a>
   </div>
 
   <div class="nav-group">

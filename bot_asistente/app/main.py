@@ -20,6 +20,7 @@ from app.admin.auth import AdminAuth
 from app.admin.chats import router as chats_router
 from app.admin.dashboard import router as dashboard_router
 from app.admin.stories import router as stories_router
+from app.admin.automatizaciones import router as automatizaciones_router
 from app.admin.views import ALL_VIEWS
 from app.config import get_settings
 from app.db.repos import (
@@ -69,7 +70,12 @@ async def lifespan(app: FastAPI):
         port=settings.bot_port,
         model=settings.claude_model_principal,
     )
+    # Arrancar scheduler de tareas programadas
+    from app.automatizaciones import iniciar_scheduler, detener_scheduler
+    iniciar_scheduler()
     yield
+    # Detener scheduler primero (deja de tomar tareas nuevas)
+    await detener_scheduler()
     # Graceful shutdown: esperar a que los tasks de procesamiento en curso
     # terminen su humanización + envío antes de matar el proceso.
     # Timeout 200s = un poco más que el delay máximo de humanización (180s).
@@ -110,6 +116,7 @@ app.include_router(dashboard_router)
 app.include_router(actions_router)
 app.include_router(chats_router)
 app.include_router(stories_router)
+app.include_router(automatizaciones_router)
 
 # SQLAdmin: CRUD automático sobre todos los modelos
 admin = Admin(
