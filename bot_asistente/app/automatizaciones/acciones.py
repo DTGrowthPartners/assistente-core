@@ -275,6 +275,19 @@ def _meta_num(valor: Any, decimales: int = 0) -> str:
     return formato.replace(",", "_").replace(".", ",").replace("_", ".")
 
 
+def _meta_fecha_espanol(fecha_iso: str) -> str:
+    dias = ("Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo")
+    meses = (
+        "enero", "febrero", "marzo", "abril", "mayo", "junio",
+        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+    )
+    try:
+        fecha = datetime.fromisoformat(fecha_iso).date()
+    except (TypeError, ValueError):
+        return str(fecha_iso)
+    return f"{dias[fecha.weekday()]} {fecha.day} de {meses[fecha.month - 1]}"
+
+
 def _meta_conversaciones(insights: dict[str, Any]) -> float:
     acciones = {
         item.get("action_type"): float(item.get("value") or 0)
@@ -316,7 +329,6 @@ async def accion_reporte_meta_campanas_grupo(session: AsyncSession, params: dict
     if campanas_ayer is None or campanas_mes is None:
         return {"ok": False, "error": "MetaSuite devolvió campañas en un formato inesperado"}
 
-    nombre = params.get("nombre_cuenta") or params.get("nombre_cliente") or account_id
     fecha = next(
         (
             (campana.get("insights") or {}).get("date_start")
@@ -337,13 +349,15 @@ async def accion_reporte_meta_campanas_grupo(session: AsyncSession, params: dict
         _meta_conversaciones(campana.get("insights") or {})
         for campana in campanas_ayer
     )
+    costo_resultado = gasto_ayer / conversaciones_ayer if conversaciones_ayer else 0
 
     mensaje = (
-        f"REPORTE META ADS - {nombre}\n"
-        f"Fecha analizada: {fecha}\n\n"
-        f"Resultados de ayer: {_meta_num(conversaciones_ayer)} conversaciones\n"
-        f"Gasto de ayer: ${_meta_num(gasto_ayer)} COP\n"
-        f"Gasto en lo que va del mes: ${_meta_num(gasto_mes)} COP"
+        "📊 REPORTE META ADS\n"
+        f"{_meta_fecha_espanol(fecha)}\n\n"
+        f"• Resultados a WhatsApp: {_meta_num(conversaciones_ayer)}\n"
+        f"• Costo por resultado: ${_meta_num(costo_resultado)}\n"
+        f"• Inversión ayer: ${_meta_num(gasto_ayer)}\n"
+        f"• Inversión mes: ${_meta_num(gasto_mes)}"
     )
 
     if params.get("dry_run"):
@@ -351,6 +365,7 @@ async def accion_reporte_meta_campanas_grupo(session: AsyncSession, params: dict
             "ok": True,
             "dry_run": True,
             "conversaciones_ayer": conversaciones_ayer,
+            "costo_resultado": costo_resultado,
             "gasto_ayer": gasto_ayer,
             "gasto_mes": gasto_mes,
             "mensajes": [mensaje],
@@ -363,6 +378,7 @@ async def accion_reporte_meta_campanas_grupo(session: AsyncSession, params: dict
         "ok": True,
         "account_id": account_id,
         "conversaciones_ayer": conversaciones_ayer,
+        "costo_resultado": costo_resultado,
         "gasto_ayer": gasto_ayer,
         "gasto_mes": gasto_mes,
         "mensajes_enviados": 1,
