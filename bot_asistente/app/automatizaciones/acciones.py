@@ -259,6 +259,173 @@ async def accion_reporte_meta_cliente(session: AsyncSession, params: dict) -> di
     return {"ok": env.get("ok"), "account_id": account_id, "preview": texto[:200], "error": env.get("error")}
 
 
+_META_RESULTADOS_PRIORIDAD = (
+    ("onsite_conversion.messaging_conversation_started_7d", "Conversaciones"),
+    ("messaging_conversation_started_7d", "Conversaciones"),
+    ("onsite_conversion.total_messaging_connection", "Conexiones de mensajes"),
+    ("lead", "Leads"),
+    ("onsite_conversion.lead_grouped", "Leads"),
+    ("offsite_conversion.fb_pixel_lead", "Leads"),
+    ("purchase", "Compras"),
+    ("omni_purchase", "Compras"),
+    ("offsite_conversion.fb_pixel_purchase", "Compras"),
+    ("link_click", "Clics en enlace"),
+)
+
+
+def _meta_num(valor: Any, decimales: int = 0) -> str:
+    try:
+        numero = float(valor or 0)
+    except (TypeError, ValueError):
+        numero = 0.0
+    formato = f"{numero:,.{decimales}f}"
+    return formato.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _meta_resultado_principal(insights: dict[str, Any]) -> tuple[str, float, float | None]:
+    acciones = {
+        item.get("action_type"): float(item.get("value") or 0)
+        for item in (insights.get("actions") or [])
+        if item.get("action_type")
+    }
+    costos = {
+        item.get("action_type"): float(item.get("value") or 0)
+        for item in (insights.get("cost_per_action_type") or [])
+        if item.get("action_type")
+    }
+    for clave, etiqueta in _META_RESULTADOS_PRIORIDAD:
+        if acciones.get(clave, 0) > 0:
+            return etiqueta, acciones[clave], costos.get(clave)
+    return "Resultados", 0.0, None
+
+
+def _meta_partir_mensajes(encabezado: str, bloques: list[str], max_chars: int = 3900) -> list[str]:
+    mensajes: list[str] = []
+    actual = encabezado
+    for bloque in bloques:
+        candidato = f"{actual}\n\n{bloque}"
+        if len(candidato) <= max_chars:
+            actual = candidato
+            continue
+        mensajes.append(actual)
+        actual = f"Continuación del reporte\n\n{bloque}"
+    if actual:
+        mensajes.append(actual)
+    return mensajes
+
+
+async def accion_reporte_meta_campanas_grupo(session: AsyncSession, params: dict) -> dict:
+    """Reporte diario detallado de las campañas que tuvieron gasto.
+
+    params: account_id, destino_id (@g.us), nombre_cuenta, date_preset y dry_run.
+    """
+    account_id = params.get("account_id")
+    destino_id = params.get("destino_id")
+    if not account_id or not destino_id:
+        return {"ok": False, "error": "faltan account_id o destino_id"}
+
+    preset = params.get("date_preset", "yesterday")
+    respuesta = await metasuite.campañas(account_id, date_preset=preset)
+    if not respuesta.get("ok"):
+        return {"ok": False, "error": respuesta.get("error")}
+
+    payload = respuesta.get("data") or {}
+    campanas = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(campanas, list):
+        return {"ok": False, "error": "MetaSuite devolvió campañas en un formato inesperado"}
+
+    corriendo: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+    for campana in campanas:
+        insights = campana.get("insights") or {}
+        try:
+            gasto = float(insights.get("spend") or 0)
+        except (TypeError, ValueError):
+            gasto = 0.0
+        if gasto > 0:
+            corriendo.append((gasto, campana, insights))
+    corriendo.sort(key=lambda item: item[0], reverse=True)
+
+    nombre = params.get("nombre_cuenta") or params.get("nombre_cliente") or account_id
+    fecha = next(
+        (insights.get("date_start") for _, _, insights in corriendo if insights.get("date_start")),
+        "día anterior",
+    )
+    gasto_total = sum(item[0] for item in corriendo)
+    impresiones_total = sum(float(item[2].get("impressions") or 0) for item in corriendo)
+    alcance_total = sum(float(item[2].get("reach") or 0) for item in corriendo)
+    clics_total = sum(
+        float(item[2].get("clicks") or item[2].get("inline_link_clicks") or 0)
+        for item in corriendo
+    )
+    ctr_total = (clics_total / impresiones_total * 100) if impresiones_total else 0
+
+    encabezado = (
+        f"REPORTE META ADS - {nombre}\n"
+        f"Fecha analizada: {fecha}\n\n"
+        f"Campañas con actividad: {len(corriendo)}\n"
+        f"Inversión total: ${_meta_num(gasto_total)} COP\n"
+        f"Impresiones: {_meta_num(impresiones_total)}\n"
+        f"Alcance sumado: {_meta_num(alcance_total)}\n"
+        f"Clics: {_meta_num(clics_total)}\n"
+        f"CTR general: {_meta_num(ctr_total, 2)}%"
+    )
+
+    if not corriendo:
+        mensajes = [encabezado + "\n\nNo hubo campañas con gasto durante el día analizado."]
+    else:
+        bloques = []
+        for indice, (gasto, campana, insights) in enumerate(corriendo, start=1):
+            etiqueta, resultados, costo_resultado = _meta_resultado_principal(insights)
+            if costo_resultado is None and resultados:
+                costo_resultado = gasto / resultados
+            clics = insights.get("clicks") or insights.get("inline_link_clicks") or 0
+            presupuesto = campana.get("daily_budget")
+            presupuesto_txt = (
+                f"${_meta_num(presupuesto)} COP/día" if presupuesto not in (None, "") else "A nivel conjunto"
+            )
+            bloques.append(
+                f"{indice}. {campana.get('name') or campana.get('id')}\n"
+                f"Estado: {campana.get('status') or campana.get('configured_status') or '-'} | "
+                f"Objetivo: {campana.get('objective') or '-'}\n"
+                f"Inversión: ${_meta_num(gasto)} | Presupuesto: {presupuesto_txt}\n"
+                f"{etiqueta}: {_meta_num(resultados)} | "
+                f"Costo/resultado: {'$' + _meta_num(costo_resultado) if costo_resultado is not None else '-'}\n"
+                f"Impresiones: {_meta_num(insights.get('impressions'))} | "
+                f"Alcance: {_meta_num(insights.get('reach'))} | Clics: {_meta_num(clics)}\n"
+                f"CTR: {_meta_num(insights.get('ctr'), 2)}% | "
+                f"CPM: ${_meta_num(insights.get('cpm'))} | CPC: ${_meta_num(insights.get('cpc'))}"
+            )
+        mensajes = _meta_partir_mensajes(encabezado, bloques)
+
+    if params.get("dry_run"):
+        return {
+            "ok": True,
+            "dry_run": True,
+            "campanas": len(corriendo),
+            "mensajes": mensajes,
+        }
+
+    enviados = 0
+    for mensaje in mensajes:
+        envio = await _enviar_a_destino("grupo", destino_id, mensaje)
+        if not envio.get("ok"):
+            return {
+                "ok": False,
+                "error": envio.get("error"),
+                "enviados": enviados,
+                "campanas": len(corriendo),
+            }
+        enviados += 1
+    return {
+        "ok": True,
+        "account_id": account_id,
+        "campanas": len(corriendo),
+        "mensajes_enviados": enviados,
+        "fecha": fecha,
+        "preview": mensajes[0][:300],
+    }
+
+
 async def accion_recordatorio_pendientes(session: AsyncSession, params: dict) -> dict:
     """Recordatorio de alertas/pendientes abiertas >Nh al equipo. (genérica, reusada)"""
     destino_tipo = params.get("destino_tipo", "numero")
@@ -1128,6 +1295,17 @@ ACCIONES_DISPONIBLES: dict[str, dict[str, Any]] = {
         "handler": accion_reporte_meta_cliente,
         "descripcion": "Reporte de Meta Ads a un cliente",
         "parametros": {"account_id": "act_...", "destino_id": "+57...", "date_preset": "yesterday|...", "nombre_cliente": "str"},
+    },
+    "reporte_meta_campanas_grupo": {
+        "handler": accion_reporte_meta_campanas_grupo,
+        "descripcion": "Reporte detallado de campañas con gasto a un grupo de WhatsApp",
+        "parametros": {
+            "account_id": "act_...",
+            "destino_id": "120363...@g.us",
+            "date_preset": "yesterday|...",
+            "nombre_cuenta": "str",
+            "dry_run": "bool",
+        },
     },
     "recordatorio_pendientes": {
         "handler": accion_recordatorio_pendientes,
