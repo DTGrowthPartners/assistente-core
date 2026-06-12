@@ -48,7 +48,7 @@ SHELL_STYLES = r"""
   [data-theme="dark"] {
     --bg-canvas: #09090B;
     --bg-card: #18181B;
-    --bg-sidebar: #0F0F10;
+    --bg-sidebar: #09090B;       /* mismo que canvas — más coherente */
     --bg-soft: #1F1F23;
     --border: #27272A;
     --border-subtle: #1F1F23;
@@ -66,6 +66,22 @@ SHELL_STYLES = r"""
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   html { background: var(--bg-canvas); }
+
+  /* Scrollbars discretas en todo el admin (Webkit + Firefox) */
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 4px;
+    border: 2px solid var(--bg-canvas);
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+  [data-theme="dark"] ::-webkit-scrollbar-thumb {
+    background: #2a2a2e;
+    border-color: var(--bg-canvas);
+  }
+  [data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
   body {
     background: var(--bg-canvas) !important;
     color: var(--text-primary);
@@ -81,11 +97,52 @@ SHELL_STYLES = r"""
   }
   .app.collapsed { grid-template-columns: 64px 1fr; }
   @media (max-width: 768px) {
+    /* Vistas normales (dashboard, listas): grid 1col, scroll de página normal */
     .app { grid-template-columns: 1fr; }
-    .sidebar { position: fixed !important; left: 0; top: 0; bottom: 0; z-index: 90;
-               width: 260px; transform: translateX(-100%); transition: transform .25s ease; }
-    .sidebar.open { transform: translateX(0); box-shadow: 0 0 24px rgba(0,0,0,.2); }
-    .main { padding: 16px 14px !important; }
+    .main { padding: 12px 10px; }
+    /* Cards / contenedores: reducir padding interno para aprovechar pantalla */
+    .card, .stat-card, .panel, .cp-card,
+    body.with-injected-sidebar .card,
+    body.with-injected-sidebar .card-body { padding: 14px !important; }
+    .page-title { font-size: 22px !important; margin-bottom: 4px !important; }
+    .page-subtitle { font-size: 12px !important; margin-bottom: 12px !important; }
+    /* Botones del header de página: que no desborden */
+    .toolbar, .page-toolbar, .actions-row {
+      flex-wrap: wrap !important; gap: 6px !important;
+    }
+
+    /* Vistas con CHAT: layout fijo estilo WhatsApp (header arriba, composer abajo,
+       solo .thread scrollea). La mobile-bar ocupa ~57px arriba, así que el chat
+       toma el resto del viewport dinámico (dvh tiene en cuenta la barra de URL
+       del navegador móvil, que aparece/desaparece). */
+    .app:has(.chat-shell) {
+      height: 100vh; height: 100dvh;
+      overflow: hidden;
+    }
+    .main:has(.chat-shell) {
+      height: calc(100vh - 57px); height: calc(100dvh - 57px);
+      max-height: calc(100vh - 57px); max-height: calc(100dvh - 57px);
+      overflow: hidden;
+      padding: 0;
+    }
+    .chat-shell {
+      height: 100%; max-height: 100%;
+      overflow: hidden;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+    }
+    .chat-area {
+      height: 100%; max-height: 100%;
+      min-height: 0;  /* clave: permite que .thread scrollee dentro del flex */
+      overflow: hidden;
+    }
+
+    .sidebar { position: fixed !important; left: 0; top: 0; bottom: 0; z-index: 9999 !important;
+               width: 260px; transform: translateX(-100%); transition: transform .25s ease;
+               background: var(--bg-sidebar) !important; }
+    .sidebar.open { transform: translateX(0); box-shadow: 0 0 24px rgba(0,0,0,.4); }
+    .sidebar-backdrop { z-index: 9998 !important; }
+    .mobile-bar { z-index: 9000 !important; }
   }
   .sidebar {
     background: var(--bg-sidebar) !important; border-right: 1px solid var(--border);
@@ -163,9 +220,18 @@ SHELL_STYLES = r"""
     padding: 8px 12px; border-radius: 8px;
     color: var(--text-secondary); text-decoration: none;
     font-size: 13.5px; font-weight: 500; margin: 1px 0;
+    position: relative;
   }
-  .nav-item:hover { background: var(--bg-soft); color: var(--text-primary); }
-  .nav-item.active { background: var(--bg-soft); color: var(--text-primary); }
+  .nav-item:hover { background: #F5F3FF; color: #6366F1; }
+  [data-theme="dark"] .nav-item:hover { background: var(--bg-soft); color: var(--text-primary); }
+  .nav-item.active {
+    background: #EEF2FF; color: #6366F1; font-weight: 600;
+  }
+  [data-theme="dark"] .nav-item.active { background: #312E81; color: #C7D2FE; }
+  .nav-item.active::before {
+    content: ''; position: absolute; left: -14px; top: 6px; bottom: 6px;
+    width: 3px; border-radius: 0 3px 3px 0; background: #6366F1;
+  }
   .nav-item .ico { width: 16px; height: 16px; flex-shrink: 0; }
   .nav-bottom { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border-subtle); }
 
@@ -256,43 +322,37 @@ def sidebar_html(active: str = "dashboard") -> str:
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
   </button>
   <div class="brand">
-    <div class="brand-logo">L</div>
-    <div class="brand-name">Laura · Innovación</div>
+    <div class="brand-logo">D</div>
+    <div class="brand-name">Dairo · DTGP</div>
   </div>
-
-  <a class="new-btn" href="/admin/chats">+ Ver chats</a>
 
   <nav class="nav-group">
     <a class="{cls('dashboard')}" href="/admin/dashboard"><svg class="ico" width="16" height="16"><use href="#i-dashboard"/></svg> <span>Dashboard</span></a>
     <a class="{cls('chats')}" href="/admin/chats"><svg class="ico" width="16" height="16"><use href="#i-messages"/></svg> <span>Chats</span></a>
-    <a class="{cls('clientes')}" href="/admin/cliente/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Clientes</span></a>
-    <a class="{cls('pedidos')}" href="/admin/pedido/list"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg> <span>Pedidos</span></a>
-    <a class="{cls('alertas')}" href="/admin/alerta-fabio/list"><svg class="ico" width="16" height="16"><use href="#i-alert"/></svg> <span>Alertas</span></a>
+    <a class="{cls('contactos')}" href="/admin/contactos"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Contactos</span></a>
+    <a class="{cls('prospectos')}" href="/admin/prospecto/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Prospectos</span></a>
+    <a class="{cls('seguimiento')}" href="/admin/seguimiento"><svg class="ico" width="16" height="16"><use href="#i-bot"/></svg> <span>Seguimiento</span></a>
+    <a class="{cls('etiquetas')}" href="/admin/etiquetas"><svg class="ico" width="16" height="16"><use href="#i-spark"/></svg> <span>Etiquetas</span></a>
+    <a class="{cls('citas')}" href="/admin/cita/list"><svg class="ico" width="16" height="16"><use href="#i-cal"/></svg> <span>Citas</span></a>
+    <a class="{cls('alertas')}" href="/admin/alerta-fabio/list"><svg class="ico" width="16" height="16"><use href="#i-alert"/></svg> <span>Pendientes</span></a>
+    <a class="{cls('servicios')}" href="/admin/servicios"><svg class="ico" width="16" height="16"><use href="#i-spark"/></svg> <span>Servicios &amp; bot</span></a>
   </nav>
 
   <div class="nav-group">
-    <div class="nav-group-label">Equipo</div>
-    <a class="{cls('equipo')}" href="/admin/equipo-miembro/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Administradores</span></a>
-    <a class="{cls('internos')}" href="/admin/numero-interno/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Números internos</span></a>
+    <div class="nav-group-label">Equipo & contactos</div>
+    <a class="{cls('equipo')}" href="/admin/equipo-miembro/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Equipo DTGP</span></a>
+    <a class="{cls('whitelist')}" href="/admin/contacto-whitelist/list"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Whitelist</span></a>
+    <a class="{cls('internos')}" href="/admin/numero-interno/list"><svg class="ico" width="16" height="16"><use href="#i-settings"/></svg> <span>Números internos</span></a>
   </div>
 
   <div class="nav-group">
-    <div class="nav-group-label">Catálogo</div>
-    <a class="{cls('productos')}" href="/admin/producto-cache/list"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg> <span>Productos</span></a>
-    <a class="{cls('tarifas')}" href="/admin/tarifa-domicilio/list"><svg class="ico" width="16" height="16"><use href="#i-money"/></svg> <span>Tarifas envío</span></a>
+    <div class="nav-group-label">Automatización</div>
+    <a class="{cls('automatizaciones')}" href="/admin/automatizaciones"><svg class="ico" width="16" height="16"><use href="#i-cal"/></svg> <span>Tareas programadas</span></a>
     <a class="{cls('stories')}" href="/admin/stories"><svg class="ico" width="16" height="16"><use href="#i-spark"/></svg> <span>Estados WA</span></a>
-    <a class="{cls('automatizaciones')}" href="/admin/automatizaciones"><svg class="ico" width="16" height="16"><use href="#i-cal"/></svg> <span>Automatizaciones</span></a>
-  </div>
-
-  <div class="nav-group">
-    <div class="nav-group-label">Avanzado</div>
-    <a class="{cls('conversaciones')}" href="/admin/conversacion/list"><svg class="ico" width="16" height="16"><use href="#i-messages"/></svg> <span>Conversaciones</span></a>
-    <a class="{cls('sesiones')}" href="/admin/sesion/list"><svg class="ico" width="16" height="16"><use href="#i-cal"/></svg> <span>Sesiones</span></a>
-    <a class="{cls('pausas')}" href="/admin/intervencion-humana/list"><svg class="ico" width="16" height="16"><use href="#i-bot"/></svg> <span>Pausas humano</span></a>
+    <a class="{cls('grupos')}" href="/admin/grupos"><svg class="ico" width="16" height="16"><use href="#i-users"/></svg> <span>Grupos WA</span></a>
   </div>
 
   <div class="nav-bottom">
-    <a class="nav-item" href="/admin"><svg class="ico" width="16" height="16"><use href="#i-settings"/></svg> <span>Volver al admin</span></a>
     <button class="nav-item" id="theme-toggle" style="background:transparent;border:none;width:100%;text-align:left;cursor:pointer;font:inherit;">
       <svg class="ico" width="16" height="16"><use href="#i-theme"/></svg> <span id="theme-label">Modo oscuro</span>
     </button>
@@ -308,6 +368,12 @@ def sidebar_html(active: str = "dashboard") -> str:
 THEME_TOGGLE_JS = r"""
 <script>
 function _adminShellInit(){
+  // Idempotencia: el script puede inyectarse 2 veces (head via middleware +
+  // body inline en dashboard/chats). Sin este guard el event delegation del
+  // hamburger se registra 2 veces y el segundo cancela al primero (toggle x2).
+  if (window.__adminShellInited) return;
+  window.__adminShellInited = true;
+
   // ── Auto-inyectar mobile-bar + backdrop si no existen ──
   if (!document.querySelector('.mobile-bar')) {
     var mb = document.createElement('div');
@@ -316,7 +382,7 @@ function _adminShellInit(){
       + '  <button class="hamburger" id="mobile-hamburger" aria-label="Menú">'
       + '    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>'
       + '  </button>'
-      + '  <div class="brand-mini"><div class="brand-logo">L</div><span>Laura · Innovación</span></div>'
+      + '  <div class="brand-mini"><div class="brand-logo">D</div><span>Dairo · DTGP</span></div>'
       + '</div>'
       + '<div class="sidebar-backdrop" id="sidebar-backdrop"></div>';
     while (mb.firstChild) document.body.insertBefore(mb.firstChild, document.body.firstChild);
@@ -373,21 +439,37 @@ function _adminShellInit(){
   }
 
   // ── Hamburger móvil ──
-  const hb = document.getElementById('mobile-hamburger');
-  const sb = document.querySelector('.sidebar') || document.querySelector('aside.sidebar.injected');
-  const bk = document.getElementById('sidebar-backdrop');
-  function closeMobile() { if (sb) sb.classList.remove('open'); if (bk) bk.classList.remove('show'); }
-  if (hb && sb) {
-    hb.addEventListener('click', () => {
-      sb.classList.toggle('open');
-      if (bk) bk.classList.toggle('show', sb.classList.contains('open'));
-    });
+  // En vistas SQLAdmin el sidebar lo inyecta otro script DOMContentLoaded que
+  // puede correr DESPUÉS de este init. Por eso usamos event delegation y
+  // resolvemos el sidebar al momento del click (no al cargar la página).
+  function findSidebar() {
+    return document.querySelector('aside.sidebar.injected')
+        || document.querySelector('.sidebar');
   }
-  if (bk) bk.addEventListener('click', closeMobile);
-  // Cerrar al navegar
-  document.querySelectorAll('.sidebar a').forEach(a => a.addEventListener('click', () => {
-    if (window.innerWidth <= 768) closeMobile();
-  }));
+  function closeMobile() {
+    const sb = findSidebar();
+    if (sb) sb.classList.remove('open');
+    const bk = document.getElementById('sidebar-backdrop');
+    if (bk) bk.classList.remove('show');
+  }
+  // Delegación en body: vale para mobile-bar inyectada en cualquier momento.
+  document.body.addEventListener('click', function(e){
+    const hbTarget = e.target.closest('#mobile-hamburger');
+    if (hbTarget) {
+      e.preventDefault();
+      const sb = findSidebar();
+      if (!sb) return;
+      sb.classList.toggle('open');
+      const bk = document.getElementById('sidebar-backdrop');
+      if (bk) bk.classList.toggle('show', sb.classList.contains('open'));
+      return;
+    }
+    if (e.target.closest('#sidebar-backdrop')) { closeMobile(); return; }
+    // Cerrar al navegar (clic en cualquier enlace del sidebar)
+    if (window.innerWidth <= 768 && e.target.closest('aside.sidebar a, .sidebar a')) {
+      closeMobile();
+    }
+  });
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', _adminShellInit);
@@ -404,8 +486,8 @@ MOBILE_BAR_HTML = """
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
   </button>
   <div class="brand-mini">
-    <div class="brand-logo">L</div>
-    <span>Laura · Innovación</span>
+    <div class="brand-logo">D</div>
+    <span>Dairo · DTGP</span>
   </div>
 </div>
 <div class="sidebar-backdrop" id="sidebar-backdrop"></div>

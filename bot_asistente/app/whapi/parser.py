@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from app.logging_setup import log
+
 TipoMensaje = Literal[
     "texto", "imagen", "audio", "video", "pdf", "sticker", "documento",
     "ubicacion", "contacto", "desconocido"
@@ -37,6 +39,10 @@ class MensajeWhapi:
     # Pushname: nombre que el cliente configuró en su perfil de WhatsApp.
     # Solo viene en inbound. Útil para conocer el nombre antes de que lo diga.
     from_name: str | None = None
+    # Atribución de anuncio (Meta "click-to-WhatsApp"): whapi entrega un objeto
+    # `referral` cuando el chat se inició desde un anuncio. Señal confiable de
+    # que la conversación viene de la pauta. None si no vino de un anuncio.
+    referral: dict[str, Any] | None = None
 
 
 # whapi payload events:
@@ -44,15 +50,60 @@ class MensajeWhapi:
 #   - "statuses.post" → estados de delivery
 TIPOS_WHAPI_A_INTERNO = {
     "text": "texto",
+    "link_preview": "texto",   # mensaje de texto con URL + preview
+    "link": "texto",
     "image": "imagen",
+    "gif": "imagen",            # whapi a veces clasifica GIFs como tipo aparte
+    "animated_image": "imagen",
     "audio": "audio",
     "voice": "audio",
+    "ptt": "audio",
     "video": "video",
     "document": "pdf",
     "sticker": "sticker",
     "location": "ubicacion",
     "contact": "contacto",
+    # Eventos de Meta / interacciones que no son comunicación real:
+    "action": "desconocido",     # tap de botón Meta (FAQ del Business Profile)
+    "unknown": "desconocido",    # tipos no documentados (reactions, edits, etc.)
+    "reaction": "desconocido",
+    "system": "desconocido",
+    "edited": "desconocido",
+    "deleted": "desconocido",
+    "poll": "desconocido",
+    "album": "imagen",           # álbumes de fotos
 }
+
+# Tipos para los que un mensaje "sin texto y sin media_url" es NORMAL — no
+# debe spammear warnings. Caso típico: voice sin caption, image sin caption
+# (caption es opcional en WhatsApp), tap de botón Meta (sin contenido).
+_TIPOS_SILENCIOSOS_SIN_TEXTO = {
+    "voice", "audio", "ptt", "image", "video", "sticker", "gif",
+    "animated_image", "album", "document",
+    "action", "unknown", "reaction", "system", "edited", "deleted", "poll",
+    "location", "contact",
+}
+
+
+def _extraer_texto_fallback(msg: dict[str, Any]) -> str | None:
+    """Intenta recuperar el texto de un mensaje cuando el extractor por tipo no
+    lo encontró (típico en mensajes con URL/link_preview que whapi entrega con
+    una forma distinta). Escanea las ubicaciones comunes."""
+    # 1) body directo
+    v = msg.get("body")
+    if isinstance(v, str) and v.strip():
+        return v
+    # 2) objetos anidados que suelen traer el texto (text/link_preview/link/action)
+    for key in ("text", "link_preview", "link", "action", "extended_text"):
+        obj = msg.get(key)
+        if isinstance(obj, dict):
+            for campo in ("body", "text", "caption", "preview", "description", "title", "url", "canonical_url"):
+                val = obj.get(campo)
+                if isinstance(val, str) and val.strip():
+                    return val
+        elif isinstance(obj, str) and obj.strip():
+            return obj
+    return None
 
 
 def normalizar_numero(raw: str | None) -> str | None:
@@ -104,17 +155,25 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
     media_mime: str | None = None
     caption: str | None = None
 
-    if raw_tipo == "text":
-        # whapi: {"text": {"body": "..."}}
+    if raw_tipo in ("text", "link_preview", "link"):
+        # whapi: {"text": {"body": "..."}} — o variantes para links
         body = msg.get("text") or {}
         if isinstance(body, dict):
             texto = body.get("body")
         elif isinstance(body, str):
             texto = body
-    elif raw_tipo in ("image", "video", "audio", "voice", "document", "sticker"):
+        if not texto:
+            texto = _extraer_texto_fallback(msg)
+    elif raw_tipo in ("image", "video", "audio", "voice", "ptt", "document", "sticker", "gif", "animated_image"):
         media = msg.get(raw_tipo) or {}
         if isinstance(media, dict):
             media_url = media.get("link") or media.get("url") or media.get("file_path")
+            # Notas de voz: whapi a veces solo entrega `{"id": "..."}` sin URL.
+            # Construimos la URL al endpoint de descarga de whapi /media/{id}.
+            if not media_url and media.get("id"):
+                from app.config import get_settings as _gs
+                _base = _gs().whapi_base_url.rstrip("/")
+                media_url = f"{_base}/media/{media['id']}"
             media_mime = media.get("mime_type")
             caption = media.get("caption")
             texto = caption  # usable para clasificación
@@ -125,12 +184,51 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
         c = msg.get("contact") or {}
         texto = f"👤 contacto: {c.get('name','')} {c.get('phone','')}"
     else:
-        texto = msg.get("body")  # fallback genérico
+        texto = _extraer_texto_fallback(msg)  # fallback genérico (tipos no mapeados)
 
-    from_n = normalizar_numero(
-        msg.get("from") if direccion == "inbound" else msg.get("chat_id")
-    )
-    to_n = normalizar_numero(msg.get("to") or msg.get("chat_id"))
+    # Defensa final: si quedó sin texto y sin media (mensaje raro / tipo nuevo),
+    # intentar recuperar el texto y, si no se puede, loguear para diagnosticar.
+    if not texto and not media_url:
+        texto = _extraer_texto_fallback(msg)
+        if not texto:
+            # Si el tipo es esperado (audio sin caption, action Meta, etc.) →
+            # debug. Solo warning si es algo NUEVO que no manejamos.
+            if raw_tipo in _TIPOS_SILENCIOSOS_SIN_TEXTO:
+                log.debug(
+                    "whapi.parser.sin_texto_ok",
+                    raw_tipo=raw_tipo, msg_id=msg_id,
+                )
+            else:
+                log.warning(
+                    "whapi.parser.sin_texto",
+                    raw_tipo=raw_tipo,
+                    keys=sorted(msg.keys()),
+                    msg_id=msg_id,
+                )
+
+    raw_from = msg.get("from")
+    raw_chat_id = msg.get("chat_id")
+    # Caso 1: INBOUND → `from` es el autor (cliente que escribió).
+    # Caso 2: OUTBOUND 1:1 (chat con cliente) → `chat_id` es el destinatario
+    #   (numero_cliente). Lo mantenemos como `from_number` por compatibilidad
+    #   con el resto del flow que asume "outbound.from_number = cliente al que
+    #   le hablamos".
+    # Caso 3: OUTBOUND en GRUPO → `chat_id` es el group_id, NO un cliente.
+    #   Usar el campo `from` que whapi trae con el autor real (= número del
+    #   bot). Si no viene, caer al número del bot configurado.
+    if direccion == "inbound":
+        from_n = normalizar_numero(raw_from)
+    elif isinstance(raw_chat_id, str) and raw_chat_id.endswith("@g.us"):
+        # Outbound en grupo: el "from" del autor es el bot, NO el group_id.
+        if raw_from:
+            from_n = normalizar_numero(raw_from)
+        else:
+            from app.config import get_settings as _gs
+            from_n = _gs().whapi_numero_bot or None
+    else:
+        # Outbound 1:1: chat_id es el destinatario (preservar comportamiento).
+        from_n = normalizar_numero(raw_chat_id)
+    to_n = normalizar_numero(msg.get("to") or raw_chat_id)
 
     if not from_n:
         return None
@@ -171,6 +269,13 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
     else:
         from_name = None
 
+    # Atribución de anuncio (Meta click-to-WhatsApp). whapi puede traerlo como
+    # `referral` o anidado en `context.referral`.
+    referral = msg.get("referral")
+    if not isinstance(referral, dict):
+        ctx_ref = ctx.get("referral") if isinstance(ctx, dict) else None
+        referral = ctx_ref if isinstance(ctx_ref, dict) else None
+
     return MensajeWhapi(
         id=str(msg_id),
         from_number=from_n,
@@ -190,6 +295,7 @@ def parsear_mensaje(msg: dict[str, Any]) -> MensajeWhapi | None:
         quoted_content=quoted_content,
         quoted_from_me=quoted_from_me,
         from_name=from_name,
+        referral=referral,
     )
 
 

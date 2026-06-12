@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS clientes (
     id              SERIAL PRIMARY KEY,
     numero_whatsapp VARCHAR(20) UNIQUE NOT NULL,
     nombre          VARCHAR(255),
+    cedula          VARCHAR(20),
+    email           VARCHAR(120),
     ciudad          VARCHAR(100),
     barrio          VARCHAR(150),
     primer_contacto TIMESTAMPTZ NOT NULL DEFAULT NOW(),

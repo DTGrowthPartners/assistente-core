@@ -522,6 +522,29 @@ body.login-page,
   margin: 60px auto;
 }
 
+/* SQLAdmin envuelve el input password en un .input-group input-group-flat
+   esperando un botón "mostrar contraseña" que no se renderiza. Forzamos que
+   el input ocupe todo el ancho del contenedor y elimine el border-radius
+   asimétrico de Tabler. */
+.input-group,
+.input-group-flat {
+  display: flex !important;
+  width: 100% !important;
+}
+.input-group > .form-control,
+.input-group-flat > .form-control,
+.input-group input[type="password"],
+.input-group input[type="text"] {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  border-radius: 8px !important;
+  border-top-right-radius: 8px !important;
+  border-bottom-right-radius: 8px !important;
+  border-top-left-radius: 8px !important;
+  border-bottom-left-radius: 8px !important;
+}
+
 /* ── Detalles / show page ──────────────────────────────────────────────── */
 
 dl.row dt {

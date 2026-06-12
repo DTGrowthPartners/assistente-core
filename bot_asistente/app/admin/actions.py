@@ -133,25 +133,144 @@ async def pausar_laura_manual(
     return RedirectResponse(f"/admin/chats/{cliente_id}?msg=pausado", status_code=303)
 
 
+@router.post("/cliente/{cliente_id}/pausar-indefinido")
+async def pausar_indefinido(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Pausa Dairo INDEFINIDAMENTE en este chat (hasta reactivación manual).
+
+    Útil para casos donde el admin quiere apagar el bot en un chat hasta nuevo
+    aviso (ej: tu propio número, contactos sensibles, manejo full-humano).
+    """
+    if not _check_auth(request):
+        raise HTTPException(401)
+    # 100 años de pausa = en la práctica, indefinida.
+    hasta = datetime.now(timezone.utc) + timedelta(days=365 * 100)
+    await session.execute(sa_text("""
+        INSERT INTO intervencion_humana (cliente_id, pausado_hasta, razon)
+        VALUES (:c, :h, :r)
+        ON CONFLICT (cliente_id) DO UPDATE
+        SET pausado_hasta = EXCLUDED.pausado_hasta, razon = EXCLUDED.razon
+    """), {
+        "c": cliente_id,
+        "h": hasta,
+        "r": "admin pausó indefinidamente desde /admin/chats",
+    })
+    await session.commit()
+    log.warning("admin.cliente.pausar_indefinido", cliente_id=cliente_id)
+    return RedirectResponse(f"/admin/chats/{cliente_id}?msg=pausado_indef", status_code=303)
+
+
 @router.post("/cliente/{cliente_id}/reactivar-laura")
 async def reactivar_laura(
     cliente_id: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    """Quita la pausa de intervención humana para este cliente.
+    """Quita la pausa y, si hay un inbound sin responder, dispara el flow.
 
-    Útil cuando el operador estaba atendiendo manualmente y decide que
-    Laura retome la conversación sin esperar a que expire la pausa de 1h.
+    El operador esperaría que "reanudar" implique también que el bot retome la
+    conversación con el último mensaje del cliente. Si el último mensaje del
+    chat es OUTBOUND (ya respondimos), solo quita la pausa.
     """
     if not _check_auth(request):
         raise HTTPException(401)
+
+    cliente = (await session.execute(
+        select(Cliente).where(Cliente.id == cliente_id)
+    )).scalar_one_or_none()
+    if not cliente:
+        raise HTTPException(404)
+
+    # 1) Quitar pausa
     await session.execute(sa_text(
         "DELETE FROM intervencion_humana WHERE cliente_id = :cid"
     ), {"cid": cliente_id})
+
+    # 2) ¿Hay un inbound posterior al último outbound/humano? — si no, solo reactivar
+    ultimo = (await session.execute(sa_text("""
+        SELECT id, direccion, contenido, tipo, media_url, whapi_message_id, timestamp
+        FROM conversaciones
+        WHERE cliente_id = :cid
+        ORDER BY id DESC LIMIT 1
+    """), {"cid": cliente_id})).first()
+
+    if not ultimo or ultimo.direccion != "inbound" or cliente.etiqueta == "personal":
+        await session.commit()
+        log.info("admin.cliente.reactivar_laura", cliente_id=cliente_id, accion="solo_pausa")
+        if _es_ajax(request):
+            return {"ok": True, "msg": "Reactivado (no hay mensaje pendiente)"}
+        return RedirectResponse(f"/admin/chats/{cliente_id}?msg=reactivado", status_code=303)
+
     await session.commit()
-    log.info("admin.cliente.reactivar_laura", cliente_id=cliente_id)
-    return RedirectResponse(f"/admin/chats/{cliente_id}?msg=reactivado", status_code=303)
+
+    # 3) Hay inbound pendiente → disparar el flow correspondiente
+    from app.whapi.parser import MensajeWhapi
+    msg = MensajeWhapi(
+        id=ultimo.whapi_message_id or f"replay_{ultimo.id}",
+        from_number=cliente.numero_whatsapp,
+        to_number=None,
+        direccion="inbound",
+        is_from_bot=False,
+        is_from_human=False,
+        tipo=ultimo.tipo or "texto",
+        texto=ultimo.contenido,
+        media_url=ultimo.media_url,
+        media_mime=None,
+        caption=None,
+        timestamp=int(ultimo.timestamp.timestamp()) if ultimo.timestamp else 0,
+        chat_id="",
+        raw={"replay": True, "from_conv_id": ultimo.id, "trigger": "reactivar-laura"},
+        from_name=cliente.nombre,
+    )
+
+    import asyncio
+    from app.equipo.directorio import es_miembro_equipo, whitelist_cliente
+    from app.identidades import principal as _identidad_principal
+
+    miembro = es_miembro_equipo(cliente.numero_whatsapp)
+    cliente_wl = whitelist_cliente(cliente.numero_whatsapp)
+    ident = _identidad_principal()
+    autor = request.session.get("admin_user", "admin")
+
+    if miembro or cliente_wl:
+        from app.flows.equipo import procesar_mensaje_equipo
+        miembro_obj = miembro or cliente_wl
+        async def _run():
+            from app.db.session import async_session_factory
+            async with async_session_factory() as s:
+                try:
+                    await procesar_mensaje_equipo(
+                        session=s, miembro=miembro_obj, msg=msg, identidad=ident,
+                    )
+                    await s.commit()
+                except Exception:
+                    await s.rollback()
+                    log.exception("admin.reactivar.equipo_fail", cliente_id=cliente_id)
+        asyncio.create_task(_run())
+    else:
+        from app.flows.conversation import procesar_mensaje_inbound
+        async def _run():
+            from app.db.session import async_session_factory
+            async with async_session_factory() as s:
+                try:
+                    await procesar_mensaje_inbound(
+                        session=s, cliente_id=cliente_id,
+                        cliente_numero=cliente.numero_whatsapp,
+                        msg=msg, identidad=ident,
+                    )
+                    await s.commit()
+                except Exception:
+                    await s.rollback()
+                    log.exception("admin.reactivar.prospecto_fail", cliente_id=cliente_id)
+        asyncio.create_task(_run())
+
+    log.warning("admin.cliente.reactivar_laura", cliente_id=cliente_id, accion="reactivar_y_procesar", autor=autor)
+    if _es_ajax(request):
+        return {"ok": True, "msg": "Reactivado — el bot ya está procesando el último mensaje"}
+    return RedirectResponse(f"/admin/chats/{cliente_id}?msg=reactivando", status_code=303)
 
 
 @router.post("/cliente/{cliente_id}/marcar-interno")
@@ -230,6 +349,412 @@ async def desbloquear_cliente(
     return RedirectResponse(f"/admin/cliente/details/{cliente_id}", status_code=303)
 
 
+def _es_ajax(request: Request) -> bool:
+    return (
+        "application/json" in (request.headers.get("accept") or "")
+        or request.headers.get("x-requested-with") in ("fetch", "XMLHttpRequest")
+    )
+
+
+@router.post("/cliente/{cliente_id}/etiqueta")
+async def cambiar_etiqueta(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Cambia la etiqueta del cliente (cliente|prospecto|equipo|personal|null).
+
+    Acepta form `etiqueta`. Si llega vacío o "ninguna" → NULL (sin clasificar).
+    Devuelve JSON si AJAX, redirect si no.
+    """
+    if not _check_auth(request):
+        raise HTTPException(401)
+    form = await request.form()
+    raw = (form.get("etiqueta") or "").strip().lower()
+    valor: str | None
+    if raw in ("", "ninguna", "null", "none", "sin_clasificar"):
+        valor = None
+    elif raw in ("cliente", "prospecto", "equipo", "personal"):
+        valor = raw
+    else:
+        if _es_ajax(request):
+            return {"ok": False, "error": "etiqueta inválida"}
+        raise HTTPException(400, "etiqueta inválida")
+
+    autor = request.session.get("admin_user", "admin")
+    await session.execute(
+        update(Cliente)
+        .where(Cliente.id == cliente_id)
+        .values(
+            etiqueta=valor,
+            etiqueta_actualizada_en=datetime.now(timezone.utc),
+            etiqueta_actualizada_por=f"admin:{autor}",
+        )
+    )
+    await session.commit()
+    log.info("admin.cliente.etiqueta", cliente_id=cliente_id, etiqueta=valor, autor=autor)
+
+    # Si la etiqueta nueva habilita respuesta del bot (cliente/prospecto/equipo)
+    # Y el último mensaje del chat es un INBOUND sin respuesta posterior
+    # (típico: fue silenciado por política estricta cuando estaba sin clasificar),
+    # disparar el flow correspondiente para que el bot retome la conversación.
+    disparado = False
+    if valor in ("cliente", "prospecto", "equipo"):
+        cliente = (await session.execute(
+            select(Cliente).where(Cliente.id == cliente_id)
+        )).scalar_one_or_none()
+        ultimo = (await session.execute(sa_text("""
+            SELECT id, direccion, contenido, tipo, media_url, whapi_message_id, timestamp
+            FROM conversaciones
+            WHERE cliente_id = :cid
+            ORDER BY id DESC LIMIT 1
+        """), {"cid": cliente_id})).first()
+
+        if cliente and ultimo and ultimo.direccion == "inbound":
+            from app.whapi.parser import MensajeWhapi
+            msg = MensajeWhapi(
+                id=ultimo.whapi_message_id or f"replay_{ultimo.id}",
+                from_number=cliente.numero_whatsapp,
+                to_number=None,
+                direccion="inbound",
+                is_from_bot=False,
+                is_from_human=False,
+                tipo=ultimo.tipo or "texto",
+                texto=ultimo.contenido,
+                media_url=ultimo.media_url,
+                media_mime=None,
+                caption=None,
+                timestamp=int(ultimo.timestamp.timestamp()) if ultimo.timestamp else 0,
+                chat_id="",
+                raw={"replay": True, "from_conv_id": ultimo.id, "trigger": "etiquetado_manual"},
+                from_name=cliente.nombre,
+            )
+
+            import asyncio as _asyncio
+            from app.equipo.directorio import es_miembro_equipo, whitelist_cliente
+            from app.identidades import principal as _identidad_principal
+            ident = _identidad_principal()
+            miembro = es_miembro_equipo(cliente.numero_whatsapp)
+            cliente_wl = whitelist_cliente(cliente.numero_whatsapp)
+
+            if valor == "equipo" or miembro or cliente_wl:
+                from app.flows.equipo import procesar_mensaje_equipo
+                miembro_obj = miembro or cliente_wl
+                if miembro_obj is not None:
+                    async def _run():
+                        from app.db.session import async_session_factory
+                        async with async_session_factory() as s2:
+                            try:
+                                await procesar_mensaje_equipo(
+                                    session=s2, miembro=miembro_obj, msg=msg, identidad=ident,
+                                )
+                                await s2.commit()
+                            except Exception:
+                                await s2.rollback()
+                                log.exception("admin.etiqueta.dispatch_equipo_fail", cliente_id=cliente_id)
+                    _asyncio.create_task(_run())
+                    disparado = True
+            else:  # cliente o prospecto → flow prospecto
+                from app.flows.conversation import procesar_mensaje_inbound
+                async def _run():
+                    from app.db.session import async_session_factory
+                    async with async_session_factory() as s2:
+                        try:
+                            await procesar_mensaje_inbound(
+                                session=s2, cliente_id=cliente_id,
+                                cliente_numero=cliente.numero_whatsapp,
+                                msg=msg, identidad=ident,
+                            )
+                            await s2.commit()
+                        except Exception:
+                            await s2.rollback()
+                            log.exception("admin.etiqueta.dispatch_prospecto_fail", cliente_id=cliente_id)
+                _asyncio.create_task(_run())
+                disparado = True
+
+            if disparado:
+                log.warning("admin.etiqueta.dispatch_flow", cliente_id=cliente_id,
+                            etiqueta=valor, autor=autor)
+
+    if _es_ajax(request):
+        return {
+            "ok": True,
+            "etiqueta": valor or "sin_clasificar",
+            "dispatched": disparado,
+        }
+    return RedirectResponse(f"/admin/chats/{cliente_id}?msg=etiqueta_ok", status_code=303)
+
+
+@router.post("/cliente/{cliente_id}/reintentar-respuesta")
+async def reintentar_respuesta(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Fuerza al bot a procesar el último mensaje inbound del cliente que quedó
+    sin respuesta (Claude se quedó vacío después de tool, o se cayó el flow).
+
+    Decide el flow según la etiqueta del cliente:
+      - prospecto / NULL  → flow conversation.procesar_mensaje_inbound
+      - equipo / cliente WL → flow equipo.procesar_mensaje_equipo
+      - personal          → rechaza (es silencio explícito)
+    """
+    if not _check_auth(request):
+        raise HTTPException(401)
+
+    cliente = (await session.execute(
+        select(Cliente).where(Cliente.id == cliente_id)
+    )).scalar_one_or_none()
+    if not cliente:
+        if _es_ajax(request):
+            return {"ok": False, "error": "cliente no encontrado"}
+        raise HTTPException(404)
+
+    if cliente.etiqueta == "personal":
+        if _es_ajax(request):
+            return {"ok": False, "error": "contacto marcado como personal — silencio explícito"}
+        raise HTTPException(400, "contacto es personal")
+
+    # 1) Si hay pausa individual activa → quitarla (el botón "Bot toma el
+    #    relevo" implica explícitamente que el bot vuelva a atender).
+    await session.execute(sa_text(
+        "DELETE FROM intervencion_humana WHERE cliente_id = :cid"
+    ), {"cid": cliente_id})
+
+    # 2) Tomar el ÚLTIMO mensaje inbound del cliente (incluso si después hubo
+    #    respuesta humana del admin). El flow carga todo el historial (48h)
+    #    así que el bot ve también lo que tú respondiste manualmente.
+    ultimo_inbound = (await session.execute(sa_text("""
+        SELECT id, contenido, tipo, media_url, whapi_message_id, timestamp
+        FROM conversaciones
+        WHERE cliente_id = :cid AND direccion = 'inbound'
+        ORDER BY id DESC LIMIT 1
+    """), {"cid": cliente_id})).first()
+    if not ultimo_inbound:
+        await session.commit()  # al menos quedó sin pausa
+        if _es_ajax(request):
+            return {"ok": True, "msg": "Pausa quitada. Aún no hay mensajes del cliente para que el bot retome."}
+        return RedirectResponse(f"/admin/chats/{cliente_id}?msg=reactivado", status_code=303)
+    await session.commit()
+
+    # Construir MensajeWhapi mock con la última conversación inbound
+    from app.whapi.parser import MensajeWhapi
+    inb_id, inb_contenido, inb_tipo, inb_media, inb_whapi_id, inb_ts = ultimo_inbound
+    msg = MensajeWhapi(
+        id=inb_whapi_id or f"replay_{inb_id}",
+        from_number=cliente.numero_whatsapp,
+        to_number=None,
+        direccion="inbound",
+        is_from_bot=False,
+        is_from_human=False,
+        tipo=inb_tipo or "texto",
+        texto=inb_contenido,
+        media_url=inb_media,
+        media_mime=None,
+        caption=None,
+        timestamp=int(inb_ts.timestamp()) if inb_ts else 0,
+        chat_id="",
+        raw={"replay": True, "from_conv_id": inb_id},
+        from_name=cliente.nombre,
+    )
+
+    # Disparar el flow apropiado en background
+    import asyncio
+    from app.equipo.directorio import es_miembro_equipo, whitelist_cliente
+    from app.identidades import principal as _identidad_principal
+
+    miembro = es_miembro_equipo(cliente.numero_whatsapp)
+    cliente_wl = whitelist_cliente(cliente.numero_whatsapp)
+    ident = _identidad_principal()
+
+    autor = request.session.get("admin_user", "admin")
+
+    if miembro or cliente_wl:
+        # Para EQUIPO o CLIENTE WL → modo "borrador": el bot genera el texto
+        # SÍNCRONAMENTE pero NO lo envía. Se devuelve para que el JS lo pegue
+        # en el composer y el operador lo lea/edite antes de enviar.
+        from app.flows.equipo import procesar_mensaje_equipo
+        miembro_obj = miembro or cliente_wl
+        flow_label = "equipo" if miembro else "cliente_wl"
+        try:
+            borrador = await procesar_mensaje_equipo(
+                session=session, miembro=miembro_obj, msg=msg, identidad=ident,
+                solo_generar=True,
+            )
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            log.exception("admin.reintentar.borrador_fail", cliente_id=cliente_id)
+            if _es_ajax(request):
+                return {"ok": False, "error": str(e)[:200]}
+            raise HTTPException(500, "no se pudo generar borrador")
+        log.warning("admin.reintentar_respuesta",
+                    cliente_id=cliente_id, flow=flow_label, modo="borrador", autor=autor)
+        if _es_ajax(request):
+            return {
+                "ok": True,
+                "borrador": borrador or "",
+                "flow": flow_label,
+                "msg": "borrador generado — léelo en el composer y dale Enviar si te sirve",
+            }
+        return RedirectResponse(f"/admin/chats/{cliente_id}?msg=reintentando", status_code=303)
+
+    # Prospecto o sin clasificar → comportamiento original (background + envío auto)
+    from app.flows.conversation import procesar_mensaje_inbound
+    async def _run():
+        from app.db.session import async_session_factory
+        async with async_session_factory() as s:
+            try:
+                await procesar_mensaje_inbound(
+                    session=s, cliente_id=cliente_id,
+                    cliente_numero=cliente.numero_whatsapp,
+                    msg=msg, identidad=ident,
+                )
+                await s.commit()
+            except Exception:
+                await s.rollback()
+                log.exception("admin.reintentar.prospecto_fail", cliente_id=cliente_id)
+    asyncio.create_task(_run())
+    log.warning("admin.reintentar_respuesta", cliente_id=cliente_id, flow="prospecto", autor=autor)
+
+    if _es_ajax(request):
+        return {"ok": True, "msg": "reintentando — la respuesta llegará en segundos"}
+    return RedirectResponse(f"/admin/chats/{cliente_id}?msg=reintentando", status_code=303)
+
+
+@router.post("/cliente/{cliente_id}/rename")
+async def renombrar_cliente(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Cambia el nombre visible del cliente. Acepta form `nombre` (vacío permitido)."""
+    if not _check_auth(request):
+        raise HTTPException(401)
+    form = await request.form()
+    nuevo = (form.get("nombre") or "").strip()
+    nuevo_val: str | None = nuevo if nuevo else None
+    await session.execute(
+        update(Cliente).where(Cliente.id == cliente_id).values(nombre=nuevo_val)
+    )
+    await session.commit()
+    log.info("admin.cliente.rename", cliente_id=cliente_id, nuevo_nombre=nuevo_val)
+    if _es_ajax(request):
+        return {"ok": True, "nombre": nuevo_val or ""}
+    return RedirectResponse(f"/admin/chats/{cliente_id}?msg=nombre_ok", status_code=303)
+
+
+# ─── Tags de seguimiento (M2M cliente↔tag) ─────────────────────────────────
+
+
+@router.post("/cliente/{cliente_id}/tag/{tag_id}/toggle")
+async def toggle_tag_cliente(
+    cliente_id: int,
+    tag_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Si el cliente ya tiene el tag → lo quita. Si no lo tiene → lo añade.
+
+    Devuelve JSON {ok, accion: 'agregado'|'quitado'} para usar desde el panel
+    del chat con un solo click.
+    """
+    if not _check_auth(request):
+        raise HTTPException(401)
+
+    existe = (await session.execute(sa_text(
+        "SELECT 1 FROM cliente_tags WHERE cliente_id = :c AND tag_id = :t"
+    ), {"c": cliente_id, "t": tag_id})).first()
+
+    autor = request.session.get("admin_user", "admin")
+    if existe:
+        await session.execute(sa_text(
+            "DELETE FROM cliente_tags WHERE cliente_id = :c AND tag_id = :t"
+        ), {"c": cliente_id, "t": tag_id})
+        accion = "quitado"
+    else:
+        await session.execute(sa_text("""
+            INSERT INTO cliente_tags (cliente_id, tag_id, added_by)
+            VALUES (:c, :t, :a)
+            ON CONFLICT DO NOTHING
+        """), {"c": cliente_id, "t": tag_id, "a": autor})
+        accion = "agregado"
+    await session.commit()
+    log.info("admin.cliente.tag.toggle",
+             cliente_id=cliente_id, tag_id=tag_id, accion=accion, autor=autor)
+    return {"ok": True, "accion": accion}
+
+
+@router.get("/cliente/{cliente_id}/tags")
+async def listar_tags_cliente(
+    cliente_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Lista TODOS los tags, marcando cuáles tiene este cliente."""
+    if not _check_auth(request):
+        raise HTTPException(401)
+    rows = (await session.execute(sa_text("""
+        SELECT t.id, t.nombre, t.color, t.descripcion, t.orden,
+               (ct.cliente_id IS NOT NULL) AS asignado
+          FROM tags t
+          LEFT JOIN cliente_tags ct
+            ON ct.tag_id = t.id AND ct.cliente_id = :cid
+         ORDER BY t.orden ASC, t.nombre ASC
+    """), {"cid": cliente_id})).all()
+    return {
+        "tags": [
+            {"id": r.id, "nombre": r.nombre, "color": r.color,
+             "descripcion": r.descripcion, "orden": r.orden,
+             "asignado": bool(r.asignado)}
+            for r in rows
+        ]
+    }
+
+
+@router.post("/bot/modo")
+async def cambiar_bot_modo(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Cambia el modo global del bot: todos / solo_prospectos / off.
+
+    - todos:            responde a equipo + prospectos + clientes WL (default)
+    - solo_prospectos:  responde solo a equipo + prospectos. Clientes WL silenciados.
+    - off:              solo equipo. Resto silenciado.
+    """
+    if not _check_auth(request):
+        raise HTTPException(401)
+    form = await request.form()
+    modo = (form.get("modo") or "").strip().lower()
+    if modo not in ("todos", "solo_prospectos", "off"):
+        if _es_ajax(request):
+            return {"ok": False, "error": "modo inválido"}
+        raise HTTPException(400, "modo inválido")
+    activo = modo != "off"
+    autor = request.session.get("admin_user", "admin")
+    await session.execute(sa_text("""
+        UPDATE bot_estado SET
+          activo = :a,
+          modo = :m,
+          pausado_por = CASE WHEN :a THEN NULL ELSE :u END,
+          pausado_en  = CASE WHEN :a THEN NULL ELSE now() END,
+          razon       = CASE WHEN :a THEN NULL ELSE :r END,
+          actualizado_en = now()
+        WHERE id = 1
+    """), {"a": activo, "m": modo, "u": autor, "r": f"Modo {modo} desde dashboard"})
+    await session.commit()
+    try:
+        from app.main import invalidar_bot_estado_cache
+        invalidar_bot_estado_cache()
+    except Exception:
+        pass
+    log.warning("admin.bot.modo", modo=modo, autor=autor)
+    if _es_ajax(request):
+        return {"ok": True, "modo": modo, "activo": activo}
+    return RedirectResponse("/admin/dashboard?msg=bot_modo", status_code=303)
+
+
 @router.post("/bot/toggle")
 async def toggle_bot(
     request: Request,
@@ -255,7 +780,25 @@ async def toggle_bot(
             "actualizado_en=now() WHERE id=1"
         ))
     await session.commit()
+    # Forzar que la próxima lectura del estado vaya a la DB (no quede en cache).
+    # Sin esto, había hasta 2-5s de ventana donde el bot seguía respondiendo
+    # como "activo" después del toggle.
+    try:
+        from app.main import invalidar_bot_estado_cache
+        invalidar_bot_estado_cache()
+    except Exception:
+        pass
     log.warning("admin.bot.toggle", nuevo_estado="activo" if nuevo_estado else "pausado")
+    # Notificar al panel admin externo si está configurado
+    try:
+        import asyncio as _aio
+        from app.panel_admin_webhook import emitir_evento as _emit
+        _aio.create_task(_emit("bot.estado_cambiado", {
+            "activo": nuevo_estado, "por": "dashboard",
+            "razon": "Toggle desde dashboard web",
+        }))
+    except Exception:
+        pass
     return RedirectResponse("/admin?msg=bot_toggle", status_code=303)
 
 
@@ -353,9 +896,6 @@ async def nuke_form(
         raise HTTPException(404, "Cliente no encontrado")
 
     from sqlalchemy import func, select as sa_select
-    n_pedidos = (await session.execute(
-        sa_select(func.count()).select_from(Pedido).where(Pedido.cliente_id == cliente_id)
-    )).scalar_one()
     n_conv = (await session.execute(
         sa_select(func.count()).select_from(Conversacion).where(Conversacion.cliente_id == cliente_id)
     )).scalar_one()
@@ -386,11 +926,10 @@ async def nuke_form(
   <p>Cliente: <strong>{nombre}</strong> · <strong>{numero}</strong></p>
   <p>Esta acción borra <strong>todo</strong> el rastro de este cliente:</p>
   <ul>
-    <li><strong>{n_pedidos}</strong> pedido(s) en la tabla pedidos</li>
     <li><strong>{n_conv}</strong> mensaje(s) de conversación</li>
-    <li><strong>{n_alertas}</strong> alerta(s) a Fabio</li>
+    <li><strong>{n_alertas}</strong> alerta(s) / pendiente(s)</li>
     <li>Sesión activa + cualquier pausa por humano</li>
-    <li>El registro del cliente</li>
+    <li>El registro del contacto</li>
   </ul>
   <p>Al primer mensaje nuevo, el bot lo tratará como cliente nuevo desde cero.
   <strong>Esta acción es irreversible.</strong></p>

@@ -12,10 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin._shell import ICON_SPRITE, SHELL_STYLES, THEME_TOGGLE_JS, sidebar_html
 from app.db.models import (
     AlertaFabio,
+    Cita,
     Cliente,
     Conversacion,
-    Pedido,
-    ProductoCache,
+    Prospecto,
 )
 from app.db.session import get_session
 
@@ -40,34 +40,35 @@ async def dashboard_json(
     hace_7d = ahora - timedelta(days=7)
     hace_30d = ahora - timedelta(days=30)
 
-    # Ventas: contamos TODOS los pedidos excepto cancelados (incluye
-    # 'datos_completos' que es el estado típico de contraentregas o pedidos
-    # recién tomados pero aún no pagados).
-    estados_venta = ("datos_completos", "esperando_pago", "comprobante_recibido",
-                     "confirmado", "despachado", "entregado")
+    # Prospectos (nuevos por periodo)
+    prospectos_hoy = (await session.execute(
+        select(func.count()).select_from(Prospecto).where(Prospecto.created_at >= hoy)
+    )).scalar_one()
+    prospectos_7d = (await session.execute(
+        select(func.count()).select_from(Prospecto).where(Prospecto.created_at >= hace_7d)
+    )).scalar_one()
 
-    ventas_hoy = (await session.execute(
-        select(func.coalesce(func.sum(Pedido.total), 0), func.count())
-        .where(Pedido.estado.in_(estados_venta))
-        .where(Pedido.created_at >= hoy)
-    )).one()
-    ventas_7d = (await session.execute(
-        select(func.coalesce(func.sum(Pedido.total), 0), func.count())
-        .where(Pedido.estado.in_(estados_venta))
-        .where(Pedido.created_at >= hace_7d)
-    )).one()
-    ventas_30d = (await session.execute(
-        select(func.coalesce(func.sum(Pedido.total), 0), func.count())
-        .where(Pedido.estado.in_(estados_venta))
-        .where(Pedido.created_at >= hace_30d)
-    )).one()
-
-    # Pedidos por estado (últimos 7d)
-    pedidos_por_estado = dict((await session.execute(
-        select(Pedido.estado, func.count())
-        .where(Pedido.created_at >= hace_7d)
-        .group_by(Pedido.estado)
+    # Prospectos por estado del funnel (últimos 30d)
+    prospectos_por_estado = dict((await session.execute(
+        select(Prospecto.estado, func.count())
+        .where(Prospecto.created_at >= hace_30d)
+        .group_by(Prospecto.estado)
     )).all())
+
+    # Citas agendadas por periodo (por fecha de la cita)
+    citas_hoy = (await session.execute(
+        select(func.count()).select_from(Cita)
+        .where(and_(Cita.fecha_inicio >= hoy, Cita.fecha_inicio < hoy + timedelta(days=1)))
+        .where(Cita.estado.in_(["agendada", "reprogramada"]))
+    )).scalar_one()
+    citas_7d = (await session.execute(
+        select(func.count()).select_from(Cita)
+        .where(Cita.created_at >= hace_7d)
+    )).scalar_one()
+    citas_30d = (await session.execute(
+        select(func.count()).select_from(Cita)
+        .where(Cita.created_at >= hace_30d)
+    )).scalar_one()
 
     # Conversaciones
     conv_hoy = (await session.execute(
@@ -125,24 +126,62 @@ async def dashboard_json(
     if cache_hoy[0] + cache_hoy[1]:
         cache_hit_rate = float(cache_hoy[1]) / float(cache_hoy[0] + cache_hoy[1]) * 100
 
-    # Top productos por menciones (no por ventas, ya que pedidos están vacíos al inicio)
-    top_productos = []
-    rows = (await session.execute(
-        select(Pedido.items)
-        .where(Pedido.created_at >= hace_30d)
-    )).scalars().all()
-    contador: dict[str, int] = {}
-    for items in rows:
-        for it in (items or []):
-            ref = it.get("ref")
-            if ref:
-                contador[ref] = contador.get(ref, 0) + int(it.get("cantidad", 1))
-    top_productos = sorted(contador.items(), key=lambda kv: -kv[1])[:10]
-
     # Alertas pendientes
     alertas_pendientes = (await session.execute(
         select(func.count()).select_from(AlertaFabio).where(AlertaFabio.resuelto.is_(False))
     )).scalar_one()
+
+    # Prospectos sin cita activa (warm leads para seguimiento)
+    from sqlalchemy import text as _sa
+    sin_agendar = (await session.execute(_sa("""
+        SELECT COUNT(*)
+          FROM clientes c
+         WHERE c.etiqueta = 'prospecto'
+           AND c.bloqueado = FALSE
+           AND NOT EXISTS (
+               SELECT 1 FROM citas
+                WHERE cliente_id = c.id
+                  AND estado IN ('agendada','reprogramada','completada')
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM cliente_tags ct
+               JOIN tags t ON t.id = ct.tag_id
+               WHERE ct.cliente_id = c.id
+                 AND t.nombre IN ('Cerrado / ganado','Perdido','No fit')
+           )
+           AND (
+               SELECT MAX(timestamp) FROM conversaciones
+                WHERE cliente_id = c.id
+           ) > now() - interval '14 days'
+    """))).scalar_one() or 0
+
+    # Conversaciones sin responder: último mensaje del cliente fue inbound
+    # hace > 1h, no hay outbound posterior, no está pausado.
+    sin_responder = (await session.execute(_sa("""
+        SELECT COUNT(DISTINCT c.id)
+          FROM clientes c
+          JOIN conversaciones cv ON cv.cliente_id = c.id
+         WHERE cv.id = (
+                 SELECT MAX(id) FROM conversaciones WHERE cliente_id = c.id
+               )
+           AND cv.direccion = 'inbound'
+           AND cv.timestamp < now() - interval '1 hour'
+           AND cv.timestamp > now() - interval '7 days'
+           AND c.etiqueta IS DISTINCT FROM 'personal'
+           AND c.bloqueado = FALSE
+           AND NOT EXISTS (
+               SELECT 1 FROM intervencion_humana
+                WHERE cliente_id = c.id AND pausado_hasta > now()
+           )
+    """))).scalar_one() or 0
+
+    # Seguimientos enviados hoy (cron seguimiento_prospectos)
+    seguimientos_hoy = (await session.execute(_sa("""
+        SELECT COUNT(*) FROM conversaciones
+         WHERE timestamp >= :hoy
+           AND direccion = 'outbound'
+           AND (metadata->>'via' = 'seguimiento_auto' OR intent = 'seguimiento_auto')
+    """), {"hoy": hoy})).scalar_one() or 0
 
     # Alertas recientes (top 5 sin resolver) para panel "Acciones pendientes"
     alertas_recientes_rows = (await session.execute(
@@ -159,24 +198,26 @@ async def dashboard_json(
         for a in alertas_recientes_rows
     ]
 
-    # Pedidos recientes (top 8) para tabla principal
-    pedidos_recientes_rows = (await session.execute(
-        select(Pedido).order_by(Pedido.id.desc()).limit(8)
-    )).scalars().all()
-    pedidos_recientes = [
+    # Citas próximas (top 8) para tabla principal
+    citas_rows = (await session.execute(
+        select(Cita, Cliente)
+        .join(Cliente, Cliente.id == Cita.cliente_id)
+        .where(Cita.estado.in_(["agendada", "reprogramada"]))
+        .where(Cita.fecha_inicio >= ahora - timedelta(hours=12))
+        .order_by(Cita.fecha_inicio.asc()).limit(8)
+    )).all()
+    citas_proximas = [
         {
-            "id": p.id,
-            "cliente_id": p.cliente_id,
-            "total_cop": float(p.total or 0),
-            "estado": p.estado,
-            "metodo_pago": p.metodo_pago,
-            "barrio": p.barrio,
-            "creado": p.created_at.isoformat() if p.created_at else None,
+            "id": c.id,
+            "nombre": c.nombre or (cl.nombre if cl else None) or "—",
+            "negocio": c.negocio or "—",
+            "fecha": c.fecha_inicio.isoformat() if c.fecha_inicio else None,
+            "estado": c.estado,
         }
-        for p in pedidos_recientes_rows
+        for c, cl in citas_rows
     ]
 
-    # Serie diaria últimos 7 días: conversaciones y ventas (para gráfico)
+    # Serie diaria últimos 7 días: conversaciones + prospectos nuevos
     serie_7d: list[dict] = []
     for i in range(6, -1, -1):
         dia = (ahora - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -185,31 +226,25 @@ async def dashboard_json(
             select(func.count()).select_from(Conversacion)
             .where(and_(Conversacion.timestamp >= dia, Conversacion.timestamp < dia_siguiente))
         )).scalar_one()
-        ventas_dia = (await session.execute(
-            select(func.coalesce(func.sum(Pedido.total), 0))
-            .where(Pedido.estado.in_(estados_venta))
-            .where(and_(Pedido.created_at >= dia, Pedido.created_at < dia_siguiente))
+        n_pros = (await session.execute(
+            select(func.count()).select_from(Prospecto)
+            .where(and_(Prospecto.created_at >= dia, Prospecto.created_at < dia_siguiente))
         )).scalar_one()
         serie_7d.append({
             "fecha": dia.strftime("%Y-%m-%d"),
             "label": dia.strftime("%a %d"),
             "conversaciones": int(n_conv),
-            "ventas_cop": float(ventas_dia or 0),
+            "prospectos": int(n_pros),
         })
-
-    # Catálogo
-    productos_total = (await session.execute(
-        select(func.count()).select_from(ProductoCache).where(ProductoCache.activo.is_(True))
-    )).scalar_one()
 
     return {
         "hora_consulta": ahora.isoformat(),
-        "ventas": {
-            "hoy": {"total_cop": float(ventas_hoy[0]), "cantidad": int(ventas_hoy[1])},
-            "7d": {"total_cop": float(ventas_7d[0]), "cantidad": int(ventas_7d[1])},
-            "30d": {"total_cop": float(ventas_30d[0]), "cantidad": int(ventas_30d[1])},
+        "prospectos": {
+            "hoy": int(prospectos_hoy),
+            "7d": int(prospectos_7d),
+            "por_estado_30d": {k: int(v) for k, v in prospectos_por_estado.items()},
         },
-        "pedidos_por_estado_7d": {k: int(v) for k, v in pedidos_por_estado.items()},
+        "citas": {"hoy": int(citas_hoy), "7d": int(citas_7d), "30d": int(citas_30d)},
         "conversaciones": {
             "total_hoy": int(conv_hoy),
             "inbound_hoy": int(inbound_hoy),
@@ -222,12 +257,13 @@ async def dashboard_json(
             "costo_usd_30d": float(costo_30d),
             "cache_hit_rate_pct": round(cache_hit_rate, 1),
         },
-        "top_productos_30d": [{"ref": r, "vendidos": n} for r, n in top_productos],
         "alertas_pendientes": int(alertas_pendientes),
+        "sin_agendar": int(sin_agendar),
+        "sin_responder": int(sin_responder),
+        "seguimientos_hoy": int(seguimientos_hoy),
         "alertas_recientes": alertas_recientes,
-        "pedidos_recientes": pedidos_recientes,
+        "citas_proximas": citas_proximas,
         "serie_7d": serie_7d,
-        "catalogo": {"productos_activos": int(productos_total)},
         "bot_estado": await _bot_estado(session),
     }
 
@@ -264,7 +300,7 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dashboard — Laura</title>
+<title>Dashboard — Dairo</title>
 <script>
 /* Theme init temprano: aplica data-theme antes de que el CSS renderice
    para evitar flash claro→oscuro y bg mezclado. */
@@ -347,7 +383,7 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
     border-right: 1px solid var(--border);
     padding: 20px 14px;
     display: flex; flex-direction: column;
-    position: sticky; top: 0; height: 100vh;
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
   }
   .main { background: var(--bg-canvas) !important; padding: 28px 32px; }
 
@@ -491,6 +527,15 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
     background: var(--bg-card); border: 1px solid var(--border);
     border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow-card);
   }
+  a.kpi-link {
+    text-decoration: none; color: inherit; display: block;
+    transition: transform .12s, border-color .12s, box-shadow .12s;
+  }
+  a.kpi-link:hover {
+    transform: translateY(-2px);
+    border-color: var(--chip-purple);
+    box-shadow: 0 6px 16px rgba(124,58,237,.15);
+  }
   .kpi-top { display: flex; align-items: center; gap: 10px; }
   .kpi-top .label { font-size: 13px; color: var(--text-secondary); flex: 1; }
   .kpi-top .menu  { color: var(--text-tertiary); cursor: pointer; font-size: 16px; line-height: 1; }
@@ -614,11 +659,11 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
     <div class="topbar">
       <label class="search">
         <svg class="ico-search" width="14" height="14"><use href="#i-search"/></svg>
-        <input type="text" placeholder="Buscar pedido, cliente, ref…" />
+        <input type="text" placeholder="Buscar contacto, prospecto, cita…" />
         <span class="kbd">/</span>
       </label>
       <div class="top-actions">
-        <button class="btn-ghost" onclick="location.href='/admin/pedido/list'">Ver pedidos</button>
+        <button class="btn-ghost" onclick="location.href='/admin/cita/list'">Ver citas</button>
         <button class="btn-primary" onclick="window.print()">Exportar</button>
       </div>
     </div>
@@ -647,36 +692,28 @@ _TEMPLATE_DASHBOARD = r"""<!doctype html>
     <div class="row-2col">
       <div class="card">
         <div class="card-header">
-          <div class="chip blue"><svg class="ico" width="16" height="16"><use href="#i-shop"/></svg></div>
-          <div class="card-title">Pedidos recientes</div>
+          <div class="chip blue"><svg class="ico" width="16" height="16"><use href="#i-cal"/></svg></div>
+          <div class="card-title">Citas próximas</div>
           <div style="margin-left:auto;color:var(--text-tertiary);cursor:pointer;font-size:16px;line-height:1;">⋮</div>
         </div>
         <table>
           <thead>
-            <tr><th>Cliente</th><th>Barrio</th><th>Pago</th><th style="text-align:right;">Total</th><th>Estado</th></tr>
+            <tr><th>Contacto</th><th>Fecha</th><th>Estado</th><th style="text-align:right;"></th></tr>
           </thead>
           <tbody id="pedidos-body"></tbody>
         </table>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <div class="chip orange"><svg class="ico" width="16" height="16"><use href="#i-alert"/></svg></div>
-          <div class="card-title">Acciones pendientes</div>
-          <div style="margin-left:auto;color:var(--text-tertiary);cursor:pointer;font-size:16px;line-height:1;">⋮</div>
-        </div>
-        <ul class="action-list" id="actions-list"></ul>
-      </div>
     </div>
 
     <!-- Chart card -->
     <div class="card chart-card">
       <div class="card-header">
         <div class="chip green"><svg class="ico" width="16" height="16"><use href="#i-spark"/></svg></div>
-        <div class="card-title">Conversaciones y ventas — últimos 7 días</div>
+        <div class="card-title">Conversaciones y prospectos — últimos 7 días</div>
         <div style="margin-left:auto;display:flex;align-items:center;gap:14px;font-size:12px;color:var(--text-secondary);">
           <span><span class="legend-dot" style="background:#7C3AED"></span>Conversaciones</span>
-          <span><span class="legend-dot" style="background:#16A34A"></span>Ventas (COP)</span>
+          <span><span class="legend-dot" style="background:#16A34A"></span>Prospectos</span>
         </div>
       </div>
       <div class="chart-canvas-wrap"><canvas id="chart-7d"></canvas></div>
@@ -733,7 +770,7 @@ function renderChart(d) {
       datasets: [
         { label: 'Conversaciones', data: d.serie_7d.map(s => s.conversaciones),
           backgroundColor: 'rgba(124,58,237,0.7)', borderRadius: 6, yAxisID: 'y' },
-        { label: 'Ventas (COP)', data: d.serie_7d.map(s => s.ventas_cop),
+        { label: 'Prospectos', data: d.serie_7d.map(s => s.prospectos),
           backgroundColor: 'rgba(22,163,74,0.7)', borderRadius: 6, yAxisID: 'y1' },
       ],
     },
@@ -743,7 +780,7 @@ function renderChart(d) {
       scales: {
         x: { grid: { display: false }, ticks: { color: textColor, font: { family: 'Inter' } } },
         y: { position: 'left', grid: { color: gridColor, borderDash: [3,3] }, ticks: { color: textColor } },
-        y1:{ position: 'right', grid: { display: false }, ticks: { color: textColor, callback: v => cop(v) } },
+        y1:{ position: 'right', grid: { display: false }, ticks: { color: textColor, precision: 0 } },
       },
     },
   });
@@ -761,24 +798,30 @@ fetch('/admin/dashboard.json').then(r => r.json()).then(d => {
     : '<span class="bot-status-dot inactive"></span>Bot PAUSADO';
   document.getElementById('bot-banner-title').innerHTML = dot;
   document.getElementById('bot-banner-sub').textContent = est.activo
-    ? 'Laura responde a los clientes automáticamente.'
-    : 'Laura no está respondiendo. ' + (est.razon || '') + (est.pausado_por ? ' · pausado por ' + est.pausado_por : '');
+    ? 'Dairo responde automáticamente.'
+    : 'Dairo no está respondiendo. ' + (est.razon || '') + (est.pausado_por ? ' · pausado por ' + est.pausado_por : '');
   const btn = document.getElementById('bot-banner-btn');
   btn.textContent = est.activo ? 'Pausar bot' : 'Reactivar bot';
   if (!est.activo) { btn.style.background = 'var(--accent-positive)'; btn.style.color = '#fff'; }
 
-  // ----- KPIs (5-7 cards) -----
+  // ----- KPIs -----
   const k = document.getElementById('kpis');
+  const costoStr = '$' + (d.claude.costo_usd_hoy || 0).toFixed(2);
   const cards = [
-    { chip: 'purple', icon: '#i-money',    t: 'Ventas hoy',         v: cop(d.ventas.hoy.total_cop),   sub: d.ventas.hoy.cantidad + ' pedidos' },
-    { chip: 'blue',   icon: '#i-shop',     t: 'Ventas 7 días',      v: cop(d.ventas['7d'].total_cop), sub: d.ventas['7d'].cantidad + ' pedidos' },
-    { chip: 'green',  icon: '#i-spark',    t: 'Ventas 30 días',     v: cop(d.ventas['30d'].total_cop),sub: d.ventas['30d'].cantidad + ' pedidos' },
-    { chip: 'pink',   icon: '#i-messages', t: 'Chats activos hoy',   v: d.conversaciones.chats_activos_hoy, sub: 'clientes únicos' },
-    { chip: 'blue',   icon: '#i-bot',      t: 'Mensajes enviados',   v: d.conversaciones.outbound_hoy,      sub: 'bot + asesoras' },
-    { chip: 'orange', icon: '#i-alert',    t: 'Alertas pendientes',  v: d.alertas_pendientes,               sub: 'sin resolver' },
+    { chip: 'purple', icon: '#i-users',    t: 'Prospectos hoy',     v: d.prospectos.hoy,                    sub: d.prospectos['7d'] + ' en 7 días', href: '/admin/prospecto/list' },
+    { chip: 'green',  icon: '#i-cal',      t: 'Citas hoy',          v: d.citas.hoy,                         sub: d.citas['7d'] + ' agendadas (7d)', href: '/admin/cita/list' },
+    { chip: 'blue',   icon: '#i-cal',      t: 'Citas 30 días',      v: d.citas['30d'],                      sub: 'agendadas',                       href: '/admin/cita/list' },
+    { chip: 'pink',   icon: '#i-messages', t: 'Chats activos hoy',  v: d.conversaciones.chats_activos_hoy,  sub: 'contactos únicos',                href: '/admin/chats' },
+    { chip: 'blue',   icon: '#i-bot',      t: 'Mensajes enviados',  v: d.conversaciones.outbound_hoy,       sub: 'hoy' },
+    { chip: 'purple', icon: '#i-messages', t: 'Recibidos hoy',      v: d.conversaciones.inbound_hoy,        sub: 'del cliente' },
+    { chip: 'orange', icon: '#i-alert',    t: 'Sin responder',      v: d.sin_responder,                     sub: '> 1h sin respuesta',              href: '/admin/chats' },
+    { chip: 'green',  icon: '#i-users',    t: 'Sin agendar',        v: d.sin_agendar,                       sub: 'warm leads',                      href: '/admin/seguimiento' },
+    { chip: 'pink',   icon: '#i-bot',      t: 'Seguimientos hoy',   v: d.seguimientos_hoy,                  sub: 'auto-enviados' },
+    { chip: 'blue',   icon: '#i-spark',    t: 'Costo Claude hoy',   v: costoStr,                            sub: 'USD' },
+    { chip: 'orange', icon: '#i-alert',    t: 'Pendientes',         v: d.alertas_pendientes,                sub: 'sin resolver',                    href: '/admin/alerta-fabio/list' },
   ];
-  k.innerHTML = cards.map(c => `
-    <div class="kpi">
+  k.innerHTML = cards.map(c => {
+    const inner = `
       <div class="kpi-top">
         <div class="chip ${c.chip}"><svg width="16" height="16"><use href="${c.icon}"/></svg></div>
         <div class="label">${c.t}</div>
@@ -787,48 +830,32 @@ fetch('/admin/dashboard.json').then(r => r.json()).then(d => {
       <div class="kpi-value">${c.v}</div>
       <div class="kpi-foot">
         <span class="vs">${c.sub}</span>
-      </div>
-    </div>
-  `).join('');
+      </div>`;
+    return c.href
+      ? `<a class="kpi kpi-link" href="${c.href}">${inner}</a>`
+      : `<div class="kpi">${inner}</div>`;
+  }).join('');
 
-  // ----- Pedidos recientes -----
+  // ----- Citas próximas -----
   const tbody = document.getElementById('pedidos-body');
-  if (!d.pedidos_recientes || d.pedidos_recientes.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">Aún no hay pedidos registrados.</td></tr>';
+  if (!d.citas_proximas || d.citas_proximas.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">No hay citas próximas.</td></tr>';
   } else {
-    tbody.innerHTML = d.pedidos_recientes.map(p => `
-      <tr onclick="location.href='/admin/pedido/details/${p.id}'" style="cursor:pointer;">
+    tbody.innerHTML = d.citas_proximas.map(c => `
+      <tr onclick="location.href='/admin/cita/details/${c.id}'" style="cursor:pointer;">
         <td>
           <div class="row-avatar">
-            <span class="avatar-circle">#${p.id}</span>
+            <span class="avatar-circle">${initials(c.nombre)}</span>
             <div>
-              <div class="cell-main">Pedido #${p.id}</div>
-              <div class="cell-sub">${p.creado ? new Date(p.creado).toLocaleDateString('es-CO') : ''}</div>
+              <div class="cell-main">${(c.nombre || '—').replace(/</g,'&lt;')}</div>
+              <div class="cell-sub">${(c.negocio || '').replace(/</g,'&lt;')}</div>
             </div>
           </div>
         </td>
-        <td>${p.barrio || '<span style="color:var(--text-tertiary)">—</span>'}</td>
-        <td>${(p.metodo_pago || '—').replace(/_/g, ' ')}</td>
-        <td style="text-align:right;font-weight:600;">${cop(p.total_cop)}</td>
-        <td><span class="badge-state ${p.estado || ''}">${p.estado || '—'}</span></td>
+        <td>${c.fecha ? new Date(c.fecha).toLocaleString('es-CO', {weekday:'short', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}) : '—'}</td>
+        <td><span class="badge-state ${c.estado || ''}">${c.estado || '—'}</span></td>
+        <td style="text-align:right;">→</td>
       </tr>
-    `).join('');
-  }
-
-  // ----- Acciones pendientes -----
-  const list = document.getElementById('actions-list');
-  if (!d.alertas_recientes || d.alertas_recientes.length === 0) {
-    list.innerHTML = '<li class="empty">Sin alertas pendientes 🎉</li>';
-  } else {
-    list.innerHTML = d.alertas_recientes.map(a => `
-      <li class="action-item">
-        <div class="action-icon"><svg width="14" height="14"><use href="#i-alert"/></svg></div>
-        <div class="action-text">
-          <div class="action-title">${(a.tipo || '').replace(/_/g, ' ')}</div>
-          <div class="action-sub">${(a.preview || '').replace(/</g,'&lt;')}</div>
-        </div>
-        <button class="action-cta" onclick="location.href='/admin/alerta-fabio/details/${a.id}'">→</button>
-      </li>
     `).join('');
   }
 

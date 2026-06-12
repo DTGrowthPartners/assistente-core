@@ -68,6 +68,7 @@ async def conversar(
     imagen_base64: str | None = None,
     imagen_mime: str | None = None,
     extra_system: str | None = None,
+    persona_file: str | None = None,
 ) -> RespuestaClaude:
     """
     Conversación con Claude usando tool use loop.
@@ -103,7 +104,7 @@ async def conversar(
         last_msg_content = mensaje_usuario
 
     messages = list(historial) + [{"role": "user", "content": last_msg_content}]
-    system = construir_system_prompt()
+    system = construir_system_prompt(persona_file=persona_file)
     if extra_system:
         # Bloque dinámico (datos del cliente, pedido en curso). Va al final y
         # SIN cache_control — cambia turno a turno y rompería el cache del resto.
@@ -122,7 +123,37 @@ async def conversar(
             )
         except Exception as e:
             log.exception("claude.api_fail", error=str(e), ronda=ronda)
-            respuesta.texto = "Disculpa, tuvimos un problema técnico. Dame un momento y te respondo."
+            # NO enviar mensaje al cliente — al cliente no le importa el error.
+            # 1) Notificar al grupo EQUIPO DTGP para que atiendan manualmente.
+            # 2) Registrar alerta en BD para que aparezca en /admin/alerta-fabio.
+            cliente_n = ctx.get("cliente_numero", "?") if isinstance(ctx, dict) else "?"
+            cliente_id_ctx = ctx.get("cliente_id") if isinstance(ctx, dict) else None
+            try:
+                from app.notif_equipo import notificar_equipo
+                await notificar_equipo(
+                    f"⚠️ *Falló Claude — atender a {cliente_n}*\n\n"
+                    f"Error: {str(e)[:200]}\n\n"
+                    f"_El cliente no recibió respuesta. Tomen el chat en el admin._"
+                )
+            except Exception:
+                pass
+            # Registrar alerta en BD
+            try:
+                from app.db.repos import registrar_alerta_fabio
+                session_ctx = ctx.get("session") if isinstance(ctx, dict) else None
+                if session_ctx is not None:
+                    await registrar_alerta_fabio(
+                        session_ctx,
+                        tipo="claude_api_fail",
+                        mensaje=(
+                            f"Falló Claude API atendiendo a {cliente_n}. "
+                            f"Error: {str(e)[:300]}. El cliente quedó sin respuesta."
+                        ),
+                        cliente_id=cliente_id_ctx,
+                    )
+            except Exception as e2:
+                log.warning("claude.api_fail.alerta_fail", error=str(e2)[:120])
+            respuesta.texto = ""
             return respuesta
 
         # Acumular costos
@@ -152,7 +183,59 @@ async def conversar(
 
         # Si Claude terminó (sin más tools que ejecutar) → devolver texto
         if stop_reason != "tool_use" or not tool_uses:
-            respuesta.texto = "\n".join(t.strip() for t in text_chunks if t and t.strip())
+            texto_final = "\n".join(t.strip() for t in text_chunks if t and t.strip())
+            # Bug-fix: Claude a veces termina con texto vacío después de usar tools
+            # (cree que ya completó el trabajo). Forzamos UNA llamada extra
+            # SIN tools (para que solo pueda escribir texto) y pre-llenamos
+            # un assistant con un opener neutro para que continúe en primera persona.
+            #
+            # IMPORTANTE: no inyectamos un user message tipo "[continúa: ...]"
+            # porque Claude lo trata como potencial injection y termina
+            # explicándolo al cliente. Mejor pre-fill como assistant.
+            if not texto_final and tools_usadas and ronda < max_loops - 1:
+                log.warning(
+                    "claude.tool_sin_respuesta_forzando_continuacion",
+                    tools=tools_usadas, ronda=ronda,
+                )
+                if resp.content:
+                    last_assistant_content: list[dict] = []
+                    for block in resp.content:
+                        if getattr(block, "type", None) == "text" and getattr(block, "text", "").strip():
+                            last_assistant_content.append({"type": "text", "text": block.text})
+                    if last_assistant_content:
+                        messages.append({"role": "assistant", "content": last_assistant_content})
+                # Llamada extra SIN tools — Claude obligado a escribir texto
+                # (no tiene tools disponibles para usar). No agregamos prefill
+                # ni nada extra a `messages` — la conversación tal cual basta
+                # y evita cualquier riesgo de que Claude "exponga" un re-prompt.
+                try:
+                    resp2 = await _client.messages.create(
+                        model=settings.claude_model_principal,
+                        max_tokens=400,
+                        system=system,
+                        messages=messages,
+                    )
+                except Exception:
+                    # Si falla, devolvemos vacío y el caller maneja.
+                    respuesta.texto = ""
+                    respuesta.tools_usadas = tools_usadas
+                    return respuesta
+                # Contabilizar tokens del extra
+                u2 = getattr(resp2, "usage", None)
+                respuesta.tokens_input += getattr(u2, "input_tokens", 0) or 0
+                respuesta.tokens_output += getattr(u2, "output_tokens", 0) or 0
+                respuesta.cache_read += getattr(u2, "cache_read_input_tokens", 0) or 0
+                respuesta.cache_write += getattr(u2, "cache_creation_input_tokens", 0) or 0
+                respuesta.costo_usd += _calcular_costo(u2)
+                # Tomar texto del segundo response
+                extra_chunks = []
+                for b in (resp2.content or []):
+                    if getattr(b, "type", None) == "text" and getattr(b, "text", "").strip():
+                        extra_chunks.append(b.text)
+                respuesta.texto = "\n".join(t.strip() for t in extra_chunks if t and t.strip())
+                respuesta.tools_usadas = tools_usadas
+                return respuesta
+            respuesta.texto = texto_final
             respuesta.tools_usadas = tools_usadas
             return respuesta
 

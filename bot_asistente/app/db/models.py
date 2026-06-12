@@ -41,6 +41,11 @@ class Cliente(Base):
     es_mayorista: Mapped[bool] = mapped_column(Boolean, default=False)
     bloqueado: Mapped[bool] = mapped_column(Boolean, default=False)
     razon_bloqueo: Mapped[str | None] = mapped_column(Text)
+    # Etiqueta de relación: cliente / prospecto / equipo / personal / NULL.
+    # `personal` = el bot NUNCA debe responder (contacto privado del dueño del número).
+    etiqueta: Mapped[str | None] = mapped_column(String(20))
+    etiqueta_actualizada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    etiqueta_actualizada_por: Mapped[str | None] = mapped_column(String(60))
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
 
 
@@ -73,6 +78,34 @@ class WebhookProcesado(Base):
 
     message_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     procesado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Tag(Base):
+    """Tag de seguimiento aplicable a clientes (M2M). Independiente de
+    `cliente.etiqueta` que clasifica el routing del bot."""
+    __tablename__ = "tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nombre: Mapped[str] = mapped_column(String(50), unique=True)
+    color: Mapped[str] = mapped_column(String(7), default="#7C3AED")
+    descripcion: Mapped[str | None] = mapped_column(Text)
+    orden: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str | None] = mapped_column(String(60))
+
+
+class ClienteTag(Base):
+    """Asignación cliente↔tag (M2M)."""
+    __tablename__ = "cliente_tags"
+
+    cliente_id: Mapped[int] = mapped_column(
+        ForeignKey("clientes.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[int] = mapped_column(
+        ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    added_by: Mapped[str | None] = mapped_column(String(60))
 
 
 class IntervencionHumana(Base):
@@ -224,6 +257,129 @@ class NumeroInterno(Base):
 
     def __str__(self) -> str:
         return f"{self.numero_whatsapp} — {self.nombre or '?'}"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# MARÍA / DTGP — modelos nuevos del vertical (Fase 2)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class ContactoWhitelist(Base):
+    """Whitelist maestra del bot (reemplaza WHITELIST.md de openclaw).
+
+    Define quién es cada número conocido y con qué permisos. El routing del
+    webhook consulta esta tabla: si el número está aquí (rol equipo o cliente)
+    → flujo OPERATIVO; si no → flujo PROSPECTO.
+    """
+    __tablename__ = "contactos_whitelist"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    numero_whatsapp: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    rol: Mapped[str] = mapped_column(String(20))  # equipo | cliente
+    nombre: Mapped[str | None] = mapped_column(String(150))
+    empresa: Mapped[str | None] = mapped_column(String(150))
+    email: Mapped[str | None] = mapped_column(String(120))
+    nit: Mapped[str | None] = mapped_column(String(30))
+    dtos_client_id: Mapped[str | None] = mapped_column(String(60))   # id del cliente en DT-OS
+    meta_account_id: Mapped[str | None] = mapped_column(String(60))  # act_... de Meta Ads
+    permisos: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    notas: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __str__(self) -> str:
+        return f"{self.nombre or '?'} ({self.numero_whatsapp}) — {self.rol}"
+
+
+class Prospecto(Base):
+    """Extensión 1:1 de `clientes` para prospectos que llegan por publicidad.
+
+    Guarda la calificación que el bot va recogiendo en el chat y el estado del
+    funnel de agendamiento. Keyed por cliente_id, igual que `sesiones`.
+    """
+    __tablename__ = "prospectos"
+
+    cliente_id: Mapped[int] = mapped_column(
+        ForeignKey("clientes.id", ondelete="CASCADE"), primary_key=True
+    )
+    negocio: Mapped[str | None] = mapped_column(String(255))
+    sector: Mapped[str | None] = mapped_column(String(100))
+    ciudad: Mapped[str | None] = mapped_column(String(100))
+    necesidad: Mapped[str | None] = mapped_column(Text)
+    ya_pauta: Mapped[bool | None] = mapped_column(Boolean)
+    tiene_web: Mapped[bool | None] = mapped_column(Boolean)
+    # Calificación de fit (migración 011): umbral mínimo para agendar.
+    tipo_organizacion: Mapped[str | None] = mapped_column(String(40))
+    # empresa | emprendimiento_estructurado | persona_natural | desconocido
+    es_empresa: Mapped[bool | None] = mapped_column(Boolean)
+    presupuesto_mensual_cop: Mapped[int | None] = mapped_column(Integer)
+    estado: Mapped[str] = mapped_column(String(30), default="nuevo")
+    # nuevo | calificando | agendado | no_fit | cliente | descartado
+    score: Mapped[int | None] = mapped_column(Integer)
+    dtos_deal_id: Mapped[str | None] = mapped_column(String(60))  # deal creado en CRM DT-OS
+    notas: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Cita(Base):
+    """Cita/reunión agendada con un prospecto vía Cal.com."""
+    __tablename__ = "citas"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    cliente_id: Mapped[int] = mapped_column(ForeignKey("clientes.id", ondelete="CASCADE"), index=True)
+    nombre: Mapped[str | None] = mapped_column(String(150))
+    email: Mapped[str | None] = mapped_column(String(120))
+    negocio: Mapped[str | None] = mapped_column(String(255))
+    fecha_inicio: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    fecha_fin: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    calcom_booking_id: Mapped[str | None] = mapped_column(String(60))
+    calcom_uid: Mapped[str | None] = mapped_column(String(80))
+    estado: Mapped[str] = mapped_column(String(20), default="agendada")
+    # agendada | reprogramada | cancelada | completada | no_asistio
+    notas: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    cliente: Mapped["Cliente"] = relationship(lazy="selectin")
+
+
+class Memoria(Base):
+    """Cosas que el bot APRENDE y recuerda entre conversaciones (reglas, hechos,
+    preferencias). Se cargan al system prompt cada turn según el scope.
+    """
+    __tablename__ = "memorias"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20))   # general | contacto | equipo
+    contacto_id: Mapped[int | None] = mapped_column(ForeignKey("clientes.id", ondelete="CASCADE"))
+    titulo: Mapped[str] = mapped_column(String(180))
+    contenido: Mapped[str] = mapped_column(Text)
+    tipo: Mapped[str] = mapped_column(String(30), default="regla")
+    activa: Mapped[bool] = mapped_column(Boolean, default=True)
+    creado_por: Mapped[str | None] = mapped_column(String(60))
+    tags: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Recordatorio(Base):
+    """Pendiente con fecha (promesa, follow-up, seguimiento). El heartbeat los lee."""
+    __tablename__ = "recordatorios"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    contacto_id: Mapped[int | None] = mapped_column(ForeignKey("clientes.id", ondelete="CASCADE"))
+    accion: Mapped[str] = mapped_column(Text)
+    motivo: Mapped[str | None] = mapped_column(Text)
+    vence_en: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    estado: Mapped[str] = mapped_column(String(20), default="pendiente")
+    origen: Mapped[str] = mapped_column(String(30), default="manual")
+    creado_por: Mapped[str | None] = mapped_column(String(60))
+    atendido_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    atendido_notas: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class TareaProgramada(Base):

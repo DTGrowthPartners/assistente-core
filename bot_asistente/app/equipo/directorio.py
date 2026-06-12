@@ -23,7 +23,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models import EquipoMiembro, NumeroInterno
+from app.db.models import ContactoWhitelist, EquipoMiembro, NumeroInterno
 from app.logging_setup import log
 
 settings = get_settings()
@@ -53,6 +53,7 @@ _cache: dict[str, Any] = {
     "loaded_at": 0.0,
     "miembros": [],
     "numeros_internos": set(),
+    "clientes_whitelist": {},  # numero -> Miembro(rol='cliente')
 }
 
 
@@ -70,6 +71,12 @@ def _cargar_si_caducado() -> None:
             internos_rows = session.execute(
                 select(NumeroInterno.numero_whatsapp).where(NumeroInterno.activo.is_(True))
             ).scalars().all()
+            clientes_rows = session.execute(
+                select(ContactoWhitelist).where(
+                    ContactoWhitelist.activo.is_(True),
+                    ContactoWhitelist.rol == "cliente",
+                )
+            ).scalars().all()
     except Exception as e:
         log.error("equipo.cache.load_fail", error=str(e))
         return
@@ -86,11 +93,25 @@ def _cargar_si_caducado() -> None:
             notas=m.notas,
         ))
 
+    clientes: dict[str, Miembro] = {}
+    for c in clientes_rows:
+        clientes[c.numero_whatsapp] = Miembro(
+            nombre=c.nombre or c.empresa or c.numero_whatsapp,
+            numero_whatsapp=c.numero_whatsapp,
+            rol="cliente",
+            areas=(),
+            es_fallback=False,
+            activo=True,
+            notas=c.empresa,
+        )
+
     _cache["loaded_at"] = ahora
     _cache["miembros"] = miembros
     _cache["numeros_internos"] = set(internos_rows)
+    _cache["clientes_whitelist"] = clientes
     log.debug("equipo.cache.reloaded",
-              miembros=len(miembros), numeros_internos=len(internos_rows))
+              miembros=len(miembros), numeros_internos=len(internos_rows),
+              clientes_whitelist=len(clientes))
 
 
 def invalidar_cache() -> None:
@@ -159,6 +180,16 @@ def es_miembro_equipo(numero: str) -> Miembro | None:
         if m.numero_whatsapp == numero:
             return m
     return None
+
+
+def whitelist_cliente(numero: str) -> Miembro | None:
+    """¿Este número es un CLIENTE whitelisted (rol=cliente)? Devuelve un Miembro
+    con rol='cliente' para enrutarlo al flujo operativo con permisos scoped.
+
+    Distinto de es_miembro_equipo (equipo interno con acceso total).
+    """
+    _cargar_si_caducado()
+    return _cache["clientes_whitelist"].get(numero)
 
 
 def fabio_phone() -> str:

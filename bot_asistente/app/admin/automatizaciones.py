@@ -165,7 +165,7 @@ async def crear(
     creador = request.session.get("admin_user", "admin")
     await session.execute(sa_text(
         """INSERT INTO tareas_programadas (nombre, cron, zona_horaria, accion, parametros, proxima_ejecucion, creado_por)
-           VALUES (:n, :c, :z, :a, :p::jsonb, :px, :u)"""
+           VALUES (:n, :c, :z, :a, CAST(:p AS jsonb), :px, :u)"""
     ), {"n": nombre, "c": cron, "z": zona_horaria, "a": accion,
         "p": json.dumps(params), "px": proxima, "u": creador})
     await session.commit()
@@ -222,7 +222,7 @@ async def editar_post(
         return RedirectResponse(f"/admin/automatizaciones/{tid}/editar?msg=cron_invalido", 303)
     await session.execute(sa_text(
         """UPDATE tareas_programadas
-           SET nombre=:n, cron=:c, zona_horaria=:z, accion=:a, parametros=:p::jsonb,
+           SET nombre=:n, cron=:c, zona_horaria=:z, accion=:a, parametros=CAST(:p AS jsonb),
                proxima_ejecucion=:px, updated_at=now()
            WHERE id=:i"""
     ), {"n": nombre, "c": cron, "z": zona_horaria, "a": accion,
@@ -270,7 +270,7 @@ async def ejecutar_ahora(tid: int, request: Request, session: AsyncSession = Dep
     resultado = await ejecutar_accion(row[0], session, row[1] or {})
     await session.execute(sa_text(
         """UPDATE tareas_programadas
-           SET ultima_ejecucion=now(), ultimo_resultado=:r::jsonb, updated_at=now()
+           SET ultima_ejecucion=now(), ultimo_resultado=CAST(:r AS jsonb), updated_at=now()
            WHERE id=:i"""
     ), {"r": json.dumps(resultado, default=str), "i": tid})
     await session.commit()
@@ -337,7 +337,7 @@ _EXTRA_STYLES = """
 _TEMPLATE_LISTA = """<!doctype html>
 <html lang="es" data-theme="light"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Automatizaciones — Laura</title>
+<title>Automatizaciones — Dairo</title>
 __SHELL_STYLES__
 __EXTRA_STYLES__
 </head><body>
@@ -355,7 +355,7 @@ __ICON_SPRITE__
         <div class="field-row">
           <div>
             <label>Nombre</label>
-            <input name="nombre" required placeholder="Ej: Reporte ventas diario"/>
+            <input name="nombre" required placeholder="Ej: Reporte CEO diario"/>
           </div>
           <div>
             <label>Acción</label>
@@ -397,7 +397,7 @@ __THEME_JS__
 _TEMPLATE_EDITAR = """<!doctype html>
 <html lang="es" data-theme="light"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Editar tarea — Laura</title>
+<title>Editar tarea — Dairo</title>
 __SHELL_STYLES__
 __EXTRA_STYLES__
 </head><body>

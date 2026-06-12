@@ -113,6 +113,66 @@ async def bot_pausado(session: AsyncSession, cliente_id: int) -> bool:
     return pausa > datetime.now(timezone.utc)
 
 
+async def bot_pausado_por_numero(
+    session: AsyncSession, numero: str
+) -> tuple[bool, int | None]:
+    """¿Está pausado el bot para este número específico?
+
+    Devuelve (pausado, cliente_id). El cliente_id puede ser None si el contacto
+    aún no existe en BD. Útil para chequear pausa ANTES de rutear (al flow de
+    equipo, prospecto, etc.) sin tener que crear el cliente primero.
+    """
+    stmt = (
+        select(Cliente.id, IntervencionHumana.pausado_hasta)
+        .select_from(Cliente)
+        .join(
+            IntervencionHumana,
+            IntervencionHumana.cliente_id == Cliente.id,
+            isouter=True,
+        )
+        .where(Cliente.numero_whatsapp == numero)
+    )
+    row = (await session.execute(stmt)).first()
+    if not row:
+        return False, None
+    cli_id, pausa = row
+    if pausa is None:
+        return False, cli_id
+    return (pausa > datetime.now(timezone.utc)), cli_id
+
+
+async def estado_chat_por_numero(
+    session: AsyncSession, numero: str
+) -> tuple[int | None, str | None, bool]:
+    """Single-query helper para enrutar mensajes.
+
+    Devuelve (cliente_id, etiqueta, pausado_indiv).
+    - cliente_id: None si el contacto aún no existe.
+    - etiqueta: 'cliente'|'prospecto'|'equipo'|'personal'|None.
+    - pausado_indiv: True si hay intervencion_humana activa.
+
+    Usado por el webhook antes de rutear: si etiqueta='personal' (el admin
+    explícitamente marcó el contacto como personal), debe VETAR el flujo de
+    bot operativo aunque el número aparezca en equipo_miembros / contactos_wl.
+    """
+    stmt = (
+        select(Cliente.id, Cliente.etiqueta, IntervencionHumana.pausado_hasta)
+        .select_from(Cliente)
+        .join(
+            IntervencionHumana,
+            IntervencionHumana.cliente_id == Cliente.id,
+            isouter=True,
+        )
+        .where(Cliente.numero_whatsapp == numero)
+    )
+    row = (await session.execute(stmt)).first()
+    if not row:
+        return None, None, False
+    cli_id, etiqueta, pausa = row
+    pausado = bool(pausa and pausa > datetime.now(timezone.utc))
+    return cli_id, etiqueta, pausado
+
+
 async def pausar_bot(
     session: AsyncSession,
     cliente_id: int,
@@ -225,13 +285,27 @@ async def registrar_alerta_fabio(
     mensaje: str,
     cliente_id: int | None = None,
     media_url: str | None = None,
+    whapi_message_id: str | None = None,
 ) -> AlertaFabio:
     alerta = AlertaFabio(
         cliente_id=cliente_id,
         tipo=tipo,
         mensaje=mensaje,
         media_url=media_url,
+        whapi_message_id=whapi_message_id,
     )
     session.add(alerta)
     await session.flush()
+    # Avisar a la plataforma admin externa (no bloqueante)
+    try:
+        import asyncio as _aio
+        from app.panel_admin_webhook import emitir_evento as _emit
+        _aio.create_task(_emit("bot.alerta_abierta", {
+            "alerta_id": alerta.id,
+            "tipo": tipo,
+            "mensaje": mensaje[:500],
+            "cliente_id": cliente_id,
+        }))
+    except Exception:
+        pass
     return alerta

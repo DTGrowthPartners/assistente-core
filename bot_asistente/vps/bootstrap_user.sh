@@ -142,37 +142,36 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# 6. Seeds
+# 6. Migraciones María (schema base + tablas DTGP + seed cron)
 # ────────────────────────────────────────────────────────────────────────────
-echo "════════ [6/7] Seeds ════════"
+echo "════════ [6/7] Migraciones ════════"
 
-export DATABASE_URL_SYNC="postgresql://asistente:${PG_PASS}@localhost:5432/asistente"
+# Ajusta usuario/DB si tu deploy usa otros nombres (ver .env).
+DB_USER="${DB_USER:-maria_user}"
+DB_NAME="${DB_NAME:-maria_db}"
 
-if [ -f "$APP_DIR/scripts/seed_tarifas.py" ] && [ -f "$APP_DIR/data/prompts/tarifas-domicilios-cartagena.md" ]; then
-  python "$APP_DIR/scripts/seed_tarifas.py" --archivo "$APP_DIR/data/prompts/tarifas-domicilios-cartagena.md"
-elif [ -f "$APP_DIR/scripts/seed_tarifas.py" ]; then
-  echo "  ⚠️  Falta tarifas-domicilios-cartagena.md en data/prompts/, saltando seed_tarifas"
-fi
-
-if [ -f "$APP_DIR/scripts/seed_catalogo.py" ]; then
-  if grep -q "^SHOPIFY_API_KEY=" "$ENV_FILE" 2>/dev/null; then
-    set -a; source "$ENV_FILE"; set +a
-    python "$APP_DIR/scripts/seed_catalogo.py" || echo "  ⚠️  seed_catalogo falló — revisar API"
+run_sql () {  # $1 = archivo .sql
+  if [ -f "$1" ]; then
+    echo "  → aplicando $(basename "$1")"
+    PGPASSWORD="$PG_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$1" \
+      || echo "  ⚠️  falló $(basename "$1")"
   fi
-fi
+}
 
-if [ -f "$APP_DIR/scripts/seed_catalogo_html.py" ]; then
-  python "$APP_DIR/scripts/seed_catalogo_html.py" \
-    --save-html "$LOG_DIR/catalogo_html_$(date +%Y%m%d).html" \
-    || echo "  ⚠️  seed_catalogo_html falló"
-fi
+run_sql "$APP_DIR/schema.sql"
+run_sql "$APP_DIR/migrations/002_equipo_a_db.sql"
+run_sql "$APP_DIR/migrations/005_estado_tareas.sql"
+run_sql "$APP_DIR/migrations/003_maria_tables.sql"
+run_sql "$APP_DIR/migrations/004_maria_tareas.sql"
 
 # Verificación rápida
 echo ""
-echo "  Estado actual de la DB:"
-PGPASSWORD="$PG_PASS" psql -h localhost -U asistente -d asistente -c "
-  SELECT 'tarifas_domicilio' AS tabla, COUNT(*) AS filas FROM tarifas_domicilio
-  UNION ALL SELECT 'productos_cache', COUNT(*) FROM productos_cache
+echo "  Estado actual de la DB (María):"
+PGPASSWORD="$PG_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "
+  SELECT 'contactos_whitelist' AS tabla, COUNT(*) AS filas FROM contactos_whitelist
+  UNION ALL SELECT 'prospectos', COUNT(*) FROM prospectos
+  UNION ALL SELECT 'citas', COUNT(*) FROM citas
+  UNION ALL SELECT 'tareas_programadas', COUNT(*) FROM tareas_programadas
   UNION ALL SELECT 'clientes', COUNT(*) FROM clientes;
 "
 

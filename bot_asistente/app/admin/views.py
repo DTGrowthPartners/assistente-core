@@ -6,23 +6,82 @@ from sqladmin import ModelView
 
 from app.db.models import (
     AlertaFabio,
+    Cita,
     Cliente,
+    ContactoWhitelist,
     Conversacion,
     EquipoMiembro,
     IntervencionHumana,
     NumeroInterno,
-    Pedido,
-    ProductoCache,
+    Prospecto,
     Sesion,
-    TarifaDomicilio,
 )
 
-# Nota técnica: SQLAdmin requiere `column_filters` como list[str] con el
-# nombre del atributo, NO como columnas SQLAlchemy. Lo mismo para
-# `column_sortable_list` y `column_default_sort` cuando se pasa al constructor.
+# Nota técnica: SQLAdmin requiere `column_filters`/`column_sortable_list` como
+# list[str] con el nombre del atributo, NO columnas SQLAlchemy.
 
 
-# ─── EQUIPO ────────────────────────────────────────────────────────────────
+# Labels comunes (compartidas entre varias vistas) — fuente única de verdad.
+COMMON_LABELS = {
+    "id": "ID",
+    "cliente_id": "Cliente",
+    "numero_whatsapp": "Número",
+    "nombre": "Nombre",
+    "email": "Correo",
+    "telefono": "Teléfono",
+    "ciudad": "Ciudad",
+    "barrio": "Barrio",
+    "empresa": "Empresa",
+    "nit": "NIT",
+    "rol": "Rol",
+    "areas": "Áreas",
+    "es_fallback": "Por defecto",
+    "activo": "Activo",
+    "notas": "Notas",
+    "razon": "Razón",
+    "permisos": "Permisos",
+    "meta_account_id": "Cuenta Meta",
+    "dtos_client_id": "ID DTOS",
+    "horario_lunes_sabado": "Horario L-S",
+    "horario_domingo": "Horario domingo",
+    "tipo": "Tipo",
+    "mensaje": "Mensaje",
+    "contenido": "Contenido",
+    "resuelto": "Resuelto",
+    "enviado_a_fabio_en": "Enviada",
+    "created_at": "Creada",
+    "updated_at": "Actualizada",
+    "timestamp": "Fecha",
+    "fecha_inicio": "Fecha",
+    "fecha_fin": "Fin",
+    "primer_contacto": "Primer contacto",
+    "ultimo_contacto": "Último contacto",
+    "ultima_interaccion": "Última interacción",
+    "bloqueado": "Bloqueado",
+    "etiqueta": "Etiqueta",
+    "negocio": "Negocio",
+    "sector": "Sector",
+    "estado": "Estado",
+    "ya_pauta": "¿Ya pauta?",
+    "tiene_web": "¿Tiene web?",
+    "presupuesto_meta": "Presupuesto Meta",
+    "direccion": "Dirección",
+    "intent": "Intent",
+    "tokens_input": "Tokens entrada",
+    "tokens_output": "Tokens salida",
+    "costo_usd": "Costo USD",
+    "modelo": "Modelo",
+    "media_url": "Adjunto",
+    "whapi_message_id": "WhAPI ID",
+    "metadata_": "Metadata",
+    "pausado_hasta": "Pausado hasta",
+    "activado_en": "Activada",
+    "etiqueta_actualizada_en": "Etiqueta actualizada",
+    "etiqueta_actualizada_por": "Etiqueta por",
+}
+
+
+# ─── CONFIGURACIÓN ──────────────────────────────────────────────────────────
 
 
 class EquipoMiembroAdmin(ModelView, model=EquipoMiembro):
@@ -31,27 +90,37 @@ class EquipoMiembroAdmin(ModelView, model=EquipoMiembro):
     icon = "fa-solid fa-users-cog"
     category = "Configuración"
 
-    column_list = [
-        "nombre",
-        "numero_whatsapp",
-        "rol",
-        "areas",
-        "es_fallback",
-        "activo",
-    ]
+    column_list = ["nombre", "numero_whatsapp", "rol", "areas", "es_fallback", "activo"]
+    column_labels = COMMON_LABELS
     column_searchable_list = ["nombre", "numero_whatsapp"]
     column_sortable_list = ["id", "nombre", "activo"]
     form_columns = [
-        EquipoMiembro.nombre,
-        EquipoMiembro.numero_whatsapp,
-        EquipoMiembro.rol,
-        EquipoMiembro.areas,
-        EquipoMiembro.es_fallback,
-        EquipoMiembro.horario_lunes_sabado,
-        EquipoMiembro.horario_domingo,
-        EquipoMiembro.activo,
-        EquipoMiembro.notas,
+        EquipoMiembro.nombre, EquipoMiembro.numero_whatsapp, EquipoMiembro.rol,
+        EquipoMiembro.areas, EquipoMiembro.es_fallback, EquipoMiembro.horario_lunes_sabado,
+        EquipoMiembro.horario_domingo, EquipoMiembro.activo, EquipoMiembro.notas,
     ]
+
+
+class ContactoWhitelistAdmin(ModelView, model=ContactoWhitelist):
+    name = "Contacto (whitelist)"
+    name_plural = "Whitelist"
+    icon = "fa-solid fa-address-book"
+    category = "Configuración"
+
+    column_list = ["nombre", "numero_whatsapp", "rol", "empresa", "meta_account_id", "activo"]
+    column_labels = COMMON_LABELS
+    column_searchable_list = ["nombre", "numero_whatsapp", "empresa", "nit"]
+    column_sortable_list = ["id", "rol", "empresa"]
+    form_columns = [
+        ContactoWhitelist.numero_whatsapp, ContactoWhitelist.rol, ContactoWhitelist.nombre,
+        ContactoWhitelist.empresa, ContactoWhitelist.email, ContactoWhitelist.nit,
+        ContactoWhitelist.dtos_client_id, ContactoWhitelist.meta_account_id,
+        ContactoWhitelist.permisos, ContactoWhitelist.activo, ContactoWhitelist.notas,
+    ]
+    column_descriptions = {
+        "rol": "equipo = acceso operativo total · cliente = acceso scoped a su propia cuenta",
+        "meta_account_id": "act_... de Meta Ads, para reportes automáticos",
+    }
 
 
 class NumeroInternoAdmin(ModelView, model=NumeroInterno):
@@ -60,95 +129,59 @@ class NumeroInternoAdmin(ModelView, model=NumeroInterno):
     icon = "fa-solid fa-shield-halved"
     category = "Configuración"
 
-    column_list = [
-        "numero_whatsapp",
-        "nombre",
-        "razon",
-        "activo",
-    ]
+    column_list = ["numero_whatsapp", "nombre", "razon", "activo"]
+    column_labels = COMMON_LABELS
     column_searchable_list = ["numero_whatsapp", "nombre"]
     column_sortable_list = ["id", "numero_whatsapp"]
     form_columns = [
-        NumeroInterno.numero_whatsapp,
-        NumeroInterno.nombre,
-        NumeroInterno.razon,
-        NumeroInterno.activo,
+        NumeroInterno.numero_whatsapp, NumeroInterno.nombre, NumeroInterno.razon, NumeroInterno.activo,
     ]
 
 
-# ─── CLIENTES ──────────────────────────────────────────────────────────────
+# ─── OPERACIÓN ──────────────────────────────────────────────────────────────
 
 
 class ClienteAdmin(ModelView, model=Cliente):
-    name = "Cliente"
-    name_plural = "Clientes"
+    name = "Contacto"
+    name_plural = "Contactos (chats)"
     icon = "fa-solid fa-user"
     category = "Operación"
 
-    column_list = [
-        "id",
-        "numero_whatsapp",
-        "nombre",
-        "ciudad",
-        "barrio",
-        "es_mayorista",
-        "bloqueado",
-        "ultimo_contacto",
-    ]
-    column_searchable_list = ["numero_whatsapp", "nombre", "ciudad", "barrio"]
+    column_list = ["id", "numero_whatsapp", "nombre", "email", "ciudad", "etiqueta", "bloqueado", "ultimo_contacto"]
+    column_labels = COMMON_LABELS
+    column_searchable_list = ["numero_whatsapp", "nombre", "email", "ciudad"]
     column_sortable_list = ["id", "ultimo_contacto", "primer_contacto"]
     page_size = 50
-
-    # Permisos explícitos (cascade borra conversaciones + pedidos al eliminar cliente)
     can_create = True
     can_edit = True
     can_delete = True
     can_view_details = True
 
-    # Tip visible en la vista de detalle:
-    column_descriptions = {
-        "bloqueado": "Si True, el bot no le responde a este número. Para 'resetear' "
-                     "una conversación (borrar mensajes pero mantener cliente) usar "
-                     "POST /admin/actions/cliente/{id}/reset",
-    }
 
-
-class PedidoAdmin(ModelView, model=Pedido):
-    name = "Pedido"
-    name_plural = "Pedidos"
-    icon = "fa-solid fa-receipt"
+class ProspectoAdmin(ModelView, model=Prospecto):
+    name = "Prospecto"
+    name_plural = "Prospectos"
+    icon = "fa-solid fa-user-plus"
     category = "Operación"
 
-    column_list = [
-        "id",
-        "cliente.numero_whatsapp",
-        "cliente.nombre",
-        "total",
-        "estado",
-        "metodo_pago",
-        "ciudad",
-        "barrio",
-        "created_at",
-    ]
-    column_labels = {
-        "cliente.numero_whatsapp": "Cliente (número)",
-        "cliente.nombre": "Cliente (nombre)",
-        "metodo_pago": "Método pago",
-        "created_at": "Creado",
-    }
-    column_sortable_list = ["id", "created_at", "total", "estado"]
-    column_searchable_list = ["ciudad", "barrio"]
+    column_list = ["cliente_id", "negocio", "sector", "ciudad", "estado", "ya_pauta", "tiene_web", "updated_at"]
+    column_labels = COMMON_LABELS
+    column_searchable_list = ["negocio", "sector", "ciudad"]
+    column_sortable_list = ["estado", "updated_at"]
     page_size = 50
 
-    # Estados estandarizados: el flujo va de cotizacion → confirmado → despachado
-    # confirmado = Fabio confirmó el pago (no antes)
-    column_descriptions = {
-        "estado": (
-            "Flujo: cotizacion → datos_completos → esperando_pago → "
-            "comprobante_recibido → confirmado (Fabio verificó pago) → "
-            "despachado → entregado | cancelado"
-        ),
-    }
+
+class CitaAdmin(ModelView, model=Cita):
+    name = "Cita"
+    name_plural = "Citas"
+    icon = "fa-solid fa-calendar-check"
+    category = "Operación"
+
+    column_list = ["id", "fecha_inicio", "nombre", "negocio", "email", "estado", "cliente_id"]
+    column_labels = COMMON_LABELS
+    column_searchable_list = ["nombre", "negocio", "email"]
+    column_sortable_list = ["fecha_inicio", "estado"]
+    page_size = 50
 
 
 class ConversacionAdmin(ModelView, model=Conversacion):
@@ -157,16 +190,8 @@ class ConversacionAdmin(ModelView, model=Conversacion):
     icon = "fa-solid fa-comments"
     category = "Operación"
 
-    column_list = [
-        "id",
-        "cliente_id",
-        "timestamp",
-        "direccion",
-        "tipo",
-        "intent",
-        "contenido",
-        "costo_usd",
-    ]
+    column_list = ["id", "cliente_id", "timestamp", "direccion", "tipo", "intent", "contenido", "costo_usd"]
+    column_labels = COMMON_LABELS
     column_sortable_list = ["id", "timestamp"]
     column_searchable_list = ["contenido"]
     can_create = False
@@ -175,30 +200,15 @@ class ConversacionAdmin(ModelView, model=Conversacion):
 
 
 class AlertaFabioAdmin(ModelView, model=AlertaFabio):
-    name = "Alerta a equipo"
-    name_plural = "Alertas a equipo"
+    name = "Alerta / pendiente"
+    name_plural = "Alertas y pendientes"
     icon = "fa-solid fa-triangle-exclamation"
     category = "Operación"
 
-    column_list = [
-        "id",
-        "tipo",
-        "cliente_id",
-        "mensaje",
-        "enviado_a_fabio_en",
-        "resuelto",
-        "created_at",
-    ]
-    column_labels = {
-        "enviado_a_fabio_en": "Enviada",
-        "created_at": "Creada",
-    }
+    column_list = ["id", "tipo", "cliente_id", "mensaje", "resuelto", "created_at"]
+    column_labels = COMMON_LABELS
     column_sortable_list = ["id", "created_at"]
-    form_columns = [
-        AlertaFabio.tipo,
-        AlertaFabio.mensaje,
-        AlertaFabio.resuelto,
-    ]
+    form_columns = [AlertaFabio.tipo, AlertaFabio.mensaje, AlertaFabio.resuelto]
     page_size = 50
 
 
@@ -208,14 +218,8 @@ class SesionAdmin(ModelView, model=Sesion):
     icon = "fa-solid fa-clock"
     category = "Operación"
 
-    column_list = [
-        "cliente_id",
-        "estado",
-        "producto_actual_ref",
-        "talla_interes",
-        "barrio",
-        "ultima_interaccion",
-    ]
+    column_list = ["cliente_id", "estado", "ultima_interaccion"]
+    column_labels = COMMON_LABELS
     column_sortable_list = ["ultima_interaccion"]
     page_size = 50
 
@@ -226,64 +230,20 @@ class IntervencionHumanaAdmin(ModelView, model=IntervencionHumana):
     icon = "fa-solid fa-hand"
     category = "Operación"
 
-    column_list = [
-        "cliente_id",
-        "pausado_hasta",
-        "razon",
-        "activado_en",
-    ]
+    column_list = ["cliente_id", "pausado_hasta", "razon", "activado_en"]
+    column_labels = COMMON_LABELS
     column_sortable_list = ["pausado_hasta"]
-
-
-# ─── CATÁLOGO ──────────────────────────────────────────────────────────────
-
-
-class ProductoCacheAdmin(ModelView, model=ProductoCache):
-    name = "Producto"
-    name_plural = "Productos"
-    icon = "fa-solid fa-tag"
-    category = "Catálogo"
-
-    column_list = [
-        "ref",
-        "nombre",
-        "categoria",
-        "precio_detal",
-        "tallas",
-        "origen",
-        "activo",
-    ]
-    column_searchable_list = ["ref", "nombre"]
-    column_sortable_list = ["ref", "precio_detal", "sincronizado_en"]
-    page_size = 50
-
-
-class TarifaDomicilioAdmin(ModelView, model=TarifaDomicilio):
-    name = "Tarifa de domicilio"
-    name_plural = "Tarifas (Cartagena)"
-    icon = "fa-solid fa-truck"
-    category = "Catálogo"
-
-    column_list = [
-        "barrio",
-        "zona",
-        "precio",
-        "tipo",
-    ]
-    column_searchable_list = ["barrio", "zona"]
-    column_sortable_list = ["barrio", "precio"]
-    page_size = 100
 
 
 ALL_VIEWS = [
     EquipoMiembroAdmin,
+    ContactoWhitelistAdmin,
     NumeroInternoAdmin,
     ClienteAdmin,
-    PedidoAdmin,
+    ProspectoAdmin,
+    CitaAdmin,
     ConversacionAdmin,
     AlertaFabioAdmin,
     SesionAdmin,
     IntervencionHumanaAdmin,
-    ProductoCacheAdmin,
-    TarifaDomicilioAdmin,
 ]

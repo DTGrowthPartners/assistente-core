@@ -19,20 +19,21 @@ from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.claude.anthropic_client import get_anthropic_client
-from app.claude.prompts import SYSTEM_PROMPT_EQUIPO
+from app.claude.prompts import SYSTEM_PROMPT_EQUIPO, bloque_empresa, bloque_servicios
 from app.claude.tools_equipo import (
     HANDLERS_EQUIPO,
     TOOL_DEFINITIONS_EQUIPO,
     ejecutar_tool_equipo,
 )
 from app.config import get_settings
-from app.db.models import AlertaFabio, Cliente, Conversacion, Pedido
+from app.db.models import AlertaFabio, Cita, Cliente, Conversacion
 from app.db.repos import get_or_create_cliente, guardar_conversacion
 from app.equipo.directorio import Miembro
 from app.logging_setup import log
 from app.validators.output_rules import stripear_emojis
-from app.whapi.client import auth_headers, enviar_texto
+from app.whapi.client import auth_headers, enviar_texto, set_token as set_whapi_token
 from app.whapi.parser import MensajeWhapi
+from app.identidades import Identidad, dairo as _identidad_default
 
 settings = get_settings()
 
@@ -45,9 +46,11 @@ PRECIO_CACHE_READ = Decimal("0.30") / Decimal("1000000")
 PRECIO_CACHE_WRITE = Decimal("3.75") / Decimal("1000000")
 
 
-async def _construir_contexto(session: AsyncSession, max_alertas: int = 8, dias: int = 3) -> str:
-    """Texto formateado con alertas abiertas + pedidos recientes para Claude."""
-    desde = datetime.now(timezone.utc) - timedelta(days=dias)
+async def _construir_contexto(session: AsyncSession, max_alertas: int = 8, dias: int = 7) -> str:
+    """Texto formateado con alertas/pendientes abiertas + citas próximas para Claude."""
+    from zoneinfo import ZoneInfo
+    _TZ = ZoneInfo(settings.tz)
+    ahora = datetime.now(timezone.utc)
 
     alertas_rows = (await session.execute(
         select(AlertaFabio, Cliente)
@@ -57,36 +60,42 @@ async def _construir_contexto(session: AsyncSession, max_alertas: int = 8, dias:
         .limit(max_alertas)
     )).all()
 
-    pedidos_rows = (await session.execute(
-        select(Pedido, Cliente)
-        .join(Cliente, Cliente.id == Pedido.cliente_id)
-        .where(Pedido.created_at >= desde)
-        .order_by(desc(Pedido.created_at))
+    citas_rows = (await session.execute(
+        select(Cita, Cliente)
+        .join(Cliente, Cliente.id == Cita.cliente_id)
+        .where(Cita.estado.in_(["agendada", "reprogramada"]))
+        .where(Cita.fecha_inicio >= ahora - timedelta(hours=12))
+        .order_by(Cita.fecha_inicio.asc())
         .limit(10)
     )).all()
 
     lineas: list[str] = []
-    lineas.append("## ALERTAS ABIERTAS (no resueltas)")
+    lineas.append("## PENDIENTES / ALERTAS ABIERTAS")
     if not alertas_rows:
         lineas.append("(ninguna)")
     else:
         for a, c in alertas_rows:
-            cliente_str = (c.nombre or "Cliente sin nombre") if c else "Cliente desconocido"
+            cliente_str = (c.nombre or "Sin nombre") if c else "Desconocido"
             num = c.numero_whatsapp if c else "?"
             lineas.append(
-                f"- alerta_id={a.id} | tipo={a.tipo} | cliente: {cliente_str} ({num})\n"
+                f"- alerta_id={a.id} | tipo={a.tipo} | {cliente_str} ({num})\n"
                 f"  mensaje: {(a.mensaje or '')[:250]}"
             )
 
-    lineas.append("\n## PEDIDOS ÚLTIMOS 3 DÍAS")
-    if not pedidos_rows:
-        lineas.append("(ninguno)")
+    lineas.append("\n## CITAS PRÓXIMAS (prospectos agendados)")
+    if not citas_rows:
+        lineas.append("(ninguna)")
     else:
-        for p, c in pedidos_rows:
+        for cita, c in citas_rows:
+            f = cita.fecha_inicio
+            if f and f.tzinfo is None:
+                f = f.replace(tzinfo=timezone.utc)
             lineas.append(
-                f"- pedido_id={p.id} | estado={p.estado} | total=${p.total} | "
-                f"{c.nombre or c.numero_whatsapp} ({c.numero_whatsapp})"
+                f"- cita_id={cita.id} | {f.astimezone(_TZ).strftime('%Y-%m-%d %H:%M')} ({settings.tz}) | "
+                f"{cita.nombre or c.nombre or c.numero_whatsapp} | negocio: {cita.negocio or '—'}"
             )
+    # Sello horario para que Claude tenga claro el "ahora" en la zona del negocio.
+    lineas.append(f"\n_Hora actual: {ahora.astimezone(_TZ).strftime('%Y-%m-%d %H:%M')} ({settings.tz})_")
 
     return "\n".join(lineas)
 
@@ -107,17 +116,57 @@ async def procesar_mensaje_equipo(
     session: AsyncSession,
     miembro: Miembro,
     msg: MensajeWhapi,
-) -> None:
-    """Procesa un inbound de un miembro del equipo y responde con confirmación."""
+    identidad: Identidad | None = None,
+    responder_a: str | None = None,
+    solo_generar: bool = False,
+) -> str | None:
+    """Procesa un inbound de un miembro del equipo y responde con confirmación.
+
+    `identidad` define el canal whapi por el que se envía la respuesta.
+    `responder_a` (opcional) — chat_id donde enviar la respuesta. Default es
+    el chat personal del miembro (`miembro.numero_whatsapp`). Pasar un
+    `group_id@g.us` para responder en un grupo en lugar del chat personal.
+
+    `solo_generar` (default False) — si True, NO envía al destinatario ni
+    persiste como outbound; devuelve el texto generado por Claude para que
+    el caller decida qué hacer (ej. mostrarlo en un composer para editar).
+    Las tools de consulta sí se ejecutan (necesarias para componer la respuesta).
+    """
+    ident = identidad or _identidad_default()
+    set_whapi_token(ident.token)
+    # destino_envio queda disponible para todos los envíos del flow
+    destino_envio = responder_a or miembro.numero_whatsapp
     instruccion = (msg.texto or "").strip()
 
+    # Nota de voz → transcribir y tratarla como instrucción de texto.
+    if not instruccion and msg.tipo == "audio" and msg.media_url:
+        from app.integrations import voz
+        try:
+            async with httpx.AsyncClient(timeout=40) as c:
+                r = await c.get(msg.media_url, headers=auth_headers())
+            if r.status_code < 400 and len(r.content) <= 16 * 1024 * 1024:
+                res = await voz.transcribir(r.content, mime=msg.media_mime or "audio/ogg")
+                if res.get("ok"):
+                    instruccion = res["texto"]
+                elif res.get("pending"):
+                    instruccion = "[Llegó una nota de voz pero no puedo transcribirla; pide el mensaje por texto.]"
+        except Exception as e:
+            log.warning("flow_equipo.voz.fail", error=str(e))
+
     # Si llega una imagen sin texto, igual procesamos (multimodal) — el equipo
-    # a veces manda foto del producto, comprobante físico, etc.
+    # a veces manda foto de un comprobante, etc.
     if not instruccion and not (msg.tipo == "imagen" and msg.media_url):
         log.info("flow_equipo.sin_texto", miembro=miembro.nombre)
         return
     if not instruccion:
         instruccion = "[Imagen sin texto; analízala y dime qué necesitas saber o qué acción quieres que tome.]"
+
+    # Limpiar menciones LID de whapi (`@243365...`). Si dejamos esos IDs en el
+    # texto, Claude se confunde y aluciona respuestas técnicas mencionándolos.
+    # Reemplazamos por `@miembro` para que el modelo entienda "alguien mencionó
+    # a alguien" sin obsesionarse con el ID opaco.
+    from app.utils.menciones import limpiar_menciones_lid
+    instruccion = limpiar_menciones_lid(instruccion)
 
     # Si el equipo cita un mensaje (típicamente un mensaje del bot/cliente),
     # inyectarlo al contexto: "Fabio citó X, su respuesta es Y"
@@ -145,17 +194,44 @@ async def procesar_mensaje_equipo(
 
     log.info("flow_equipo.inbound", miembro=miembro.nombre, preview=instruccion[:100])
 
-    # Persistir el inbound del admin para que aparezca en /admin/chats.
-    # Auto-crea un "cliente" con el número del admin (ya bloqueado por la
-    # lógica de webhook para que no se procese como cliente normal).
-    cliente_proxy = await get_or_create_cliente(session, miembro.numero_whatsapp)
-    if not cliente_proxy.nombre:
-        # Bautizar con el nombre del miembro
-        await session.execute(
-            update(Cliente).where(Cliente.id == cliente_proxy.id).values(
-                nombre=f"[ADMIN] {miembro.nombre}"
+    # Persistir el inbound. Si vino de un GRUPO de WhatsApp, asociamos al
+    # "cliente virtual" del grupo (numero_whatsapp = chat_id @g.us) para que
+    # toda la conversación quede agrupada en /admin/chats como un solo chat
+    # con su nombre real, en vez de mensajes sueltos por miembro.
+    # Si es chat 1:1, comportamiento anterior: cliente = el miembro.
+    es_chat_grupo = bool(msg.chat_id and msg.chat_id.endswith("@g.us"))
+    if es_chat_grupo:
+        cliente_proxy = await get_or_create_cliente(session, msg.chat_id)
+        # Etiquetar como grupo y nombre humano si no lo tiene
+        nombre_grupo = None
+        if not cliente_proxy.nombre or cliente_proxy.etiqueta != "grupo":
+            from app.whapi.client import obtener_grupo
+            try:
+                info = await obtener_grupo(msg.chat_id)
+                nombre_grupo = info.get("name")
+            except Exception:
+                pass
+        if not cliente_proxy.nombre or cliente_proxy.etiqueta != "grupo":
+            await session.execute(
+                update(Cliente).where(Cliente.id == cliente_proxy.id).values(
+                    nombre=nombre_grupo or cliente_proxy.nombre or msg.chat_id,
+                    etiqueta="grupo",
+                    etiqueta_actualizada_en=datetime.now(timezone.utc),
+                    etiqueta_actualizada_por="auto:grupo",
+                )
             )
-        )
+    else:
+        cliente_proxy = await get_or_create_cliente(session, miembro.numero_whatsapp)
+        if not cliente_proxy.nombre:
+            await session.execute(
+                update(Cliente).where(Cliente.id == cliente_proxy.id).values(
+                    nombre=f"[ADMIN] {miembro.nombre}"
+                )
+            )
+    _meta_inbound = {"es_equipo": True, "miembro": miembro.nombre}
+    if es_chat_grupo:
+        _meta_inbound["chat_id"] = msg.chat_id
+        _meta_inbound["from_miembro"] = miembro.numero_whatsapp
     await guardar_conversacion(
         session,
         cliente_id=cliente_proxy.id,
@@ -164,7 +240,7 @@ async def procesar_mensaje_equipo(
         contenido=msg.texto,
         whapi_message_id=msg.id,
         media_url=msg.media_url,
-        metadata={"es_equipo": True, "miembro": miembro.nombre},
+        metadata=_meta_inbound,
     )
 
     # Descargar imagen si llegó (multimodal vía visión)
@@ -182,10 +258,23 @@ async def procesar_mensaje_equipo(
         except Exception as e:
             log.warning("flow_equipo.imagen.fail_download", error=str(e))
 
-    # 1. Construir contexto operativo
+    # 1. Construir contexto operativo + memoria evolutiva
     contexto = await _construir_contexto(session)
+    from app import memoria as mem
+    memorias = await mem.cargar_relevantes(session, contacto_id=cliente_proxy.id)
+    bloque_memoria = mem.formatear_para_prompt(memorias)
 
     # 2. System prompt + contexto
+    es_cliente = (miembro.rol or "").lower() == "cliente"
+    nota_scope = ""
+    if es_cliente:
+        nota_scope = (
+            "\n\n⚠️ QUIEN TE ESCRIBE ES UN CLIENTE DE DTGP, no del equipo interno. "
+            "Solo puedes darle información de SU propia cuenta (su reporte de Meta Ads, "
+            "estado de su servicio). NO ejecutes acciones internas (registrar gastos/ingresos, "
+            "crear cuentas de cobro, ver finanzas globales, tareas del equipo, pausar el bot). "
+            "Si pide algo fuera de su alcance, dile con amabilidad que lo gestiona el equipo."
+        )
     system = [
         {
             "type": "text",
@@ -194,8 +283,15 @@ async def procesar_mensaje_equipo(
         },
         {
             "type": "text",
-            "text": f"Miembro hablándote: {miembro.nombre} (rol: {miembro.rol or 'admin'})\n\n"
-                    f"## CONTEXTO ACTUAL\n\n{contexto}",
+            "text": ("## DT GROWTH PARTNERS — EMPRESA Y SERVICIOS (úsalo como fuente oficial)\n\n"
+                     + bloque_empresa() + "\n\n" + bloque_servicios()),
+            "cache_control": {"type": "ephemeral"},
+        },
+        {
+            "type": "text",
+            "text": f"Quien te escribe: {miembro.nombre} (rol: {miembro.rol or 'equipo'}).{nota_scope}\n\n"
+                    f"## CONTEXTO ACTUAL\n\n{contexto}"
+                    + (f"\n\n{bloque_memoria}" if bloque_memoria else ""),
         },
     ]
 
@@ -242,6 +338,7 @@ async def procesar_mensaje_equipo(
         "session": session,
         "miembro_nombre": miembro.nombre,
         "miembro_numero": miembro.numero_whatsapp,
+        "rol": miembro.rol,
     }
 
     tokens_in = tokens_out = cache_r = cache_w = 0
@@ -260,10 +357,31 @@ async def procesar_mensaje_equipo(
             )
         except Exception as e:
             log.exception("flow_equipo.claude_fail", error=str(e))
+            # NUNCA mostrar el error técnico en el chat (ni al cliente ni al
+            # equipo). Solo: notificar al grupo interno + alerta en BD para
+            # que el admin la vea en /admin/alertas. Razón: los mensajes
+            # tipo "Error code: 400 - credit balance is too low" no aportan
+            # al destinatario y rompen la percepción de un bot funcional.
+            dest = destino_envio or ""
             try:
-                await enviar_texto(
-                    miembro.numero_whatsapp,
-                    "❌ Tuve un problema técnico procesando tu instrucción. Reintenta en un momento.",
+                from app.notif_equipo import notificar_equipo
+                await notificar_equipo(
+                    f"⚠️ *Falló Claude (flow equipo/cliente WL)*\n\n"
+                    f"📱 {dest}\n👤 {miembro.nombre if miembro else '?'}\n"
+                    f"Error: {str(e)[:300]}\n\n"
+                    f"_No se envió respuesta al destinatario. Atender desde el admin._"
+                )
+            except Exception:
+                pass
+            try:
+                from app.db.repos import registrar_alerta_fabio
+                await registrar_alerta_fabio(
+                    session, tipo="claude_api_fail",
+                    mensaje=(
+                        f"Falló Claude (flow equipo/WL) atendiendo a "
+                        f"{miembro.nombre if miembro else '?'} ({dest}). "
+                        f"Error: {str(e)[:300]}."
+                    ),
                 )
             except Exception:
                 pass
@@ -288,10 +406,29 @@ async def procesar_mensaje_equipo(
         stop_reason = getattr(resp, "stop_reason", None)
         if stop_reason != "tool_use" or not tool_uses:
             texto_final = "\n".join(t.strip() for t in text_chunks if t and t.strip()).strip()
+            if texto_final and solo_generar:
+                # Modo borrador: no enviar ni persistir. El caller usa el texto
+                # (ej. lo pega en el composer del admin para que el operador
+                # lo lea/edite antes de enviar).
+                log.info("flow_equipo.borrador_generado",
+                         miembro=miembro.nombre, chars=len(texto_final),
+                         tools=tools_usadas)
+                return texto_final
             if texto_final:
-                # Responder a Fabio con la confirmación (sin humanización — es interno)
+                # Última red de seguridad: si el admin desactivó el bot DURANTE
+                # el procesamiento, no enviar la respuesta. Esto cubre el caso
+                # de un webhook que ya entró al flow antes del toggle.
                 try:
-                    await enviar_texto(miembro.numero_whatsapp, texto_final)
+                    from app.main import _bot_global_pausado
+                    if await _bot_global_pausado():
+                        log.warning("flow_equipo.envio_abortado_bot_pausado",
+                                    destino=destino_envio)
+                        return
+                except Exception:
+                    pass
+                # Responder al miembro (chat personal) o al grupo si vino del grupo.
+                try:
+                    await enviar_texto(destino_envio, texto_final)
                 except Exception as e:
                     log.error("flow_equipo.enviar_confirmacion_fail", error=str(e))
                 # Persistir outbound para que aparezca en /admin/chats

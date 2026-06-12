@@ -1,8 +1,18 @@
+# ── CONTACTOS PERSONALES (info sensible) ────────────────────────────────────
+**/data/contactos_*
+**/data/contactos/
+# Cualquier archivo de contactos en cualquier ubicación
+**/contactos*.vcf
+**/contactos*.csv
+**/contactos.vcf
+**/contactos.csv
+
 # ── SECRETOS — NUNCA COMMITEAR ─────────────────────────────────────────────
 secrets/
 .env
 .env.local
 .env.production
+.env.evo-agent
 *.pem
 *.key
 id_rsa*
@@ -10,37 +20,26 @@ id_ed25519*
 **/credenciales.md
 **/notas_claudevps.md
 **/whapi.md
+# Service accounts / llaves de Google y similares
+**/google_sheets_config.json
+**/*service_account*.json
+**/*-credentials.json
 
-# ── DATOS SENSIBLES DEL BOT ANTERIOR ───────────────────────────────────────
-# Conversaciones reales con clientes — info personal
-BOT VENTAS/memory/
-# Capturas de pantalla de errores (pueden mostrar números/mensajes)
-BOT VENTAS/errores/
+# ── WORKSPACE openclaw DE MARÍA (referencia local, NO se versiona) ──────────
+# Copia del workspace openclaw de la María vieja. Contiene secretos en texto
+# plano y un repo git anidado; se usa solo como fuente de contexto al construir
+# la nueva María. No debe entrar al repo.
+workspace-maria/
 
-# ── BINARIOS PESADOS (van por CDN o disco del servidor) ────────────────────
-# Catálogo de medios — viven en /home/asistente/data/ del VPS o Shopify CDN
-BOT VENTAS/catalogo/
-BOT VENTAS/mediosdepago/
-BOT VENTAS/ubicaciones/
-BOT VENTAS/pdfs/
-BOT VENTAS/voice_notes_module/
-
-# Carpetas de assets en raíz que el usuario maneja localmente
+# ── BINARIOS PESADOS / MEDIA (van por disco del servidor o CDN) ────────────
 /mediosdepago/
 /catalogo/
 /ubicaciones/
-
-# Por extensión (defensivo si quedan archivos sueltos en otro lado)
 *.mp4
 *.MOV
 *.mov
-*.pdf
-*.xlsm
 *.dump
 *.sqlite
-
-# Excepción: el xlsx de tarifas (lo dejamos como referencia histórica)
-!tarifas_domicilios_cartagena. 1.xlsx
 
 # ── Python ─────────────────────────────────────────────────────────────────
 __pycache__/
@@ -59,10 +58,6 @@ env/
 htmlcov/
 
 # ── Data dumps ─────────────────────────────────────────────────────────────
-shopify_raw.json
-catalogo.html
-productos_html.json
-*.dump
 *.sql.bak
 
 # ── Logs ───────────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ Se inicia en lifespan de FastAPI y se detiene al apagar.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 try:
@@ -58,12 +58,36 @@ def calcular_proxima(cron_expr: str, zona: str, desde: datetime | None = None) -
 
 
 async def _ejecutar_tarea(tarea_row: dict) -> None:
-    """Ejecuta una tarea y actualiza la BD con el resultado."""
+    """Ejecuta una tarea y actualiza la BD con el resultado.
+
+    PRE-AVANCE DEFENSIVO: actualizamos `proxima_ejecucion` ANTES de ejecutar la
+    acción. Así, aunque la acción falle o el UPDATE del resultado falle, la
+    tarea NUNCA puede entrar en loop (su próxima fecha ya quedó adelantada).
+    """
     tid = tarea_row["id"]
     accion = tarea_row["accion"]
     params = tarea_row["parametros"] or {}
     cron = tarea_row["cron"]
     zona = tarea_row["zona_horaria"]
+
+    ahora_utc = datetime.now(timezone.utc)
+    proxima = calcular_proxima(cron, zona, ahora_utc)
+
+    # 1) Avanzar proxima_ejecucion ANTES de ejecutar (defensa anti-loop).
+    #    Si calcular_proxima devolvió None (cron inválido), avanzamos +1h como
+    #    salvavidas para que igual no se reentre cada minuto.
+    proxima_safe = proxima or (ahora_utc + timedelta(hours=1))
+    try:
+        async with async_session_factory() as s_pre:
+            await s_pre.execute(sa_text(
+                "UPDATE tareas_programadas SET proxima_ejecucion = :p, "
+                "ultima_ejecucion = :u, updated_at = now() WHERE id = :i"
+            ), {"p": proxima_safe, "u": ahora_utc, "i": tid})
+            await s_pre.commit()
+    except Exception:
+        log.exception("scheduler.tarea.pre_advance_fail", id=tid)
+        # Si ni siquiera podemos avanzar la fecha, NO ejecutamos: sería loop seguro.
+        return
 
     log.info("scheduler.tarea.start", id=tid, accion=accion)
     try:
@@ -77,26 +101,19 @@ async def _ejecutar_tarea(tarea_row: dict) -> None:
         log.exception("scheduler.tarea.fail", id=tid, accion=accion, error=str(e))
         resultado = {"ok": False, "error": str(e)[:300]}
 
-    ahora_utc = datetime.now(timezone.utc)
-    proxima = calcular_proxima(cron, zona, ahora_utc)
-
-    # Actualizar tarea en sesión nueva (la anterior puede haber roto)
+    # 2) Guardar el resultado (informativo, no crítico para evitar loops).
     try:
         async with async_session_factory() as s2:
-            await s2.execute(sa_text("""
-                UPDATE tareas_programadas
-                SET ultima_ejecucion = :u,
-                    proxima_ejecucion = :p,
-                    ultimo_resultado = :r::jsonb,
-                    updated_at = now()
-                WHERE id = :i
-            """), {"u": ahora_utc, "p": proxima, "r": _jsonable(resultado), "i": tid})
+            await s2.execute(sa_text(
+                "UPDATE tareas_programadas SET ultimo_resultado = CAST(:r AS jsonb), "
+                "updated_at = now() WHERE id = :i"
+            ), {"r": _jsonable(resultado), "i": tid})
             await s2.commit()
     except Exception:
         log.exception("scheduler.tarea.update_fail", id=tid)
 
     ok = resultado.get("ok", False)
-    log.info("scheduler.tarea.done", id=tid, accion=accion, ok=ok, proxima=str(proxima))
+    log.info("scheduler.tarea.done", id=tid, accion=accion, ok=ok, proxima=str(proxima_safe))
 
 
 def _jsonable(obj: Any) -> str:
