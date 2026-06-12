@@ -259,17 +259,10 @@ async def accion_reporte_meta_cliente(session: AsyncSession, params: dict) -> di
     return {"ok": env.get("ok"), "account_id": account_id, "preview": texto[:200], "error": env.get("error")}
 
 
-_META_RESULTADOS_PRIORIDAD = (
-    ("onsite_conversion.messaging_conversation_started_7d", "Conversaciones"),
-    ("messaging_conversation_started_7d", "Conversaciones"),
-    ("onsite_conversion.total_messaging_connection", "Conexiones de mensajes"),
-    ("lead", "Leads"),
-    ("onsite_conversion.lead_grouped", "Leads"),
-    ("offsite_conversion.fb_pixel_lead", "Leads"),
-    ("purchase", "Compras"),
-    ("omni_purchase", "Compras"),
-    ("offsite_conversion.fb_pixel_purchase", "Compras"),
-    ("link_click", "Clics en enlace"),
+_META_ACCIONES_CONVERSACION = (
+    "onsite_conversion.messaging_conversation_started_7d",
+    "messaging_conversation_started_7d",
+    "onsite_conversion.total_messaging_connection",
 )
 
 
@@ -282,40 +275,26 @@ def _meta_num(valor: Any, decimales: int = 0) -> str:
     return formato.replace(",", "_").replace(".", ",").replace("_", ".")
 
 
-def _meta_resultado_principal(insights: dict[str, Any]) -> tuple[str, float, float | None]:
+def _meta_conversaciones(insights: dict[str, Any]) -> float:
     acciones = {
         item.get("action_type"): float(item.get("value") or 0)
         for item in (insights.get("actions") or [])
         if item.get("action_type")
     }
-    costos = {
-        item.get("action_type"): float(item.get("value") or 0)
-        for item in (insights.get("cost_per_action_type") or [])
-        if item.get("action_type")
-    }
-    for clave, etiqueta in _META_RESULTADOS_PRIORIDAD:
+    for clave in _META_ACCIONES_CONVERSACION:
         if acciones.get(clave, 0) > 0:
-            return etiqueta, acciones[clave], costos.get(clave)
-    return "Resultados", 0.0, None
+            return acciones[clave]
+    return 0.0
 
 
-def _meta_partir_mensajes(encabezado: str, bloques: list[str], max_chars: int = 3900) -> list[str]:
-    mensajes: list[str] = []
-    actual = encabezado
-    for bloque in bloques:
-        candidato = f"{actual}\n\n{bloque}"
-        if len(candidato) <= max_chars:
-            actual = candidato
-            continue
-        mensajes.append(actual)
-        actual = f"Continuación del reporte\n\n{bloque}"
-    if actual:
-        mensajes.append(actual)
-    return mensajes
+def _meta_extraer_campanas(respuesta: dict[str, Any]) -> list[dict[str, Any]] | None:
+    payload = respuesta.get("data") or {}
+    campanas = payload.get("data") if isinstance(payload, dict) else payload
+    return campanas if isinstance(campanas, list) else None
 
 
 async def accion_reporte_meta_campanas_grupo(session: AsyncSession, params: dict) -> dict:
-    """Reporte diario detallado de las campañas que tuvieron gasto.
+    """Resumen diario de conversaciones y gasto de Meta Ads.
 
     params: account_id, destino_id (@g.us), nombre_cuenta, date_preset y dry_run.
     """
@@ -325,104 +304,70 @@ async def accion_reporte_meta_campanas_grupo(session: AsyncSession, params: dict
         return {"ok": False, "error": "faltan account_id o destino_id"}
 
     preset = params.get("date_preset", "yesterday")
-    respuesta = await metasuite.campañas(account_id, date_preset=preset)
-    if not respuesta.get("ok"):
-        return {"ok": False, "error": respuesta.get("error")}
+    respuesta_ayer = await metasuite.campañas(account_id, date_preset=preset)
+    if not respuesta_ayer.get("ok"):
+        return {"ok": False, "error": respuesta_ayer.get("error")}
+    respuesta_mes = await metasuite.campañas(account_id, date_preset="this_month")
+    if not respuesta_mes.get("ok"):
+        return {"ok": False, "error": respuesta_mes.get("error")}
 
-    payload = respuesta.get("data") or {}
-    campanas = payload.get("data") if isinstance(payload, dict) else payload
-    if not isinstance(campanas, list):
+    campanas_ayer = _meta_extraer_campanas(respuesta_ayer)
+    campanas_mes = _meta_extraer_campanas(respuesta_mes)
+    if campanas_ayer is None or campanas_mes is None:
         return {"ok": False, "error": "MetaSuite devolvió campañas en un formato inesperado"}
-
-    corriendo: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
-    for campana in campanas:
-        insights = campana.get("insights") or {}
-        try:
-            gasto = float(insights.get("spend") or 0)
-        except (TypeError, ValueError):
-            gasto = 0.0
-        if gasto > 0:
-            corriendo.append((gasto, campana, insights))
-    corriendo.sort(key=lambda item: item[0], reverse=True)
 
     nombre = params.get("nombre_cuenta") or params.get("nombre_cliente") or account_id
     fecha = next(
-        (insights.get("date_start") for _, _, insights in corriendo if insights.get("date_start")),
+        (
+            (campana.get("insights") or {}).get("date_start")
+            for campana in campanas_ayer
+            if (campana.get("insights") or {}).get("date_start")
+        ),
         "día anterior",
     )
-    gasto_total = sum(item[0] for item in corriendo)
-    impresiones_total = sum(float(item[2].get("impressions") or 0) for item in corriendo)
-    alcance_total = sum(float(item[2].get("reach") or 0) for item in corriendo)
-    clics_total = sum(
-        float(item[2].get("clicks") or item[2].get("inline_link_clicks") or 0)
-        for item in corriendo
+    gasto_ayer = sum(
+        float((campana.get("insights") or {}).get("spend") or 0)
+        for campana in campanas_ayer
     )
-    ctr_total = (clics_total / impresiones_total * 100) if impresiones_total else 0
+    gasto_mes = sum(
+        float((campana.get("insights") or {}).get("spend") or 0)
+        for campana in campanas_mes
+    )
+    conversaciones_ayer = sum(
+        _meta_conversaciones(campana.get("insights") or {})
+        for campana in campanas_ayer
+    )
 
-    encabezado = (
+    mensaje = (
         f"REPORTE META ADS - {nombre}\n"
         f"Fecha analizada: {fecha}\n\n"
-        f"Campañas con actividad: {len(corriendo)}\n"
-        f"Inversión total: ${_meta_num(gasto_total)} COP\n"
-        f"Impresiones: {_meta_num(impresiones_total)}\n"
-        f"Alcance sumado: {_meta_num(alcance_total)}\n"
-        f"Clics: {_meta_num(clics_total)}\n"
-        f"CTR general: {_meta_num(ctr_total, 2)}%"
+        f"Resultados de ayer: {_meta_num(conversaciones_ayer)} conversaciones\n"
+        f"Gasto de ayer: ${_meta_num(gasto_ayer)} COP\n"
+        f"Gasto en lo que va del mes: ${_meta_num(gasto_mes)} COP"
     )
-
-    if not corriendo:
-        mensajes = [encabezado + "\n\nNo hubo campañas con gasto durante el día analizado."]
-    else:
-        bloques = []
-        for indice, (gasto, campana, insights) in enumerate(corriendo, start=1):
-            etiqueta, resultados, costo_resultado = _meta_resultado_principal(insights)
-            if costo_resultado is None and resultados:
-                costo_resultado = gasto / resultados
-            clics = insights.get("clicks") or insights.get("inline_link_clicks") or 0
-            presupuesto = campana.get("daily_budget")
-            presupuesto_txt = (
-                f"${_meta_num(presupuesto)} COP/día" if presupuesto not in (None, "") else "A nivel conjunto"
-            )
-            bloques.append(
-                f"{indice}. {campana.get('name') or campana.get('id')}\n"
-                f"Estado: {campana.get('status') or campana.get('configured_status') or '-'} | "
-                f"Objetivo: {campana.get('objective') or '-'}\n"
-                f"Inversión: ${_meta_num(gasto)} | Presupuesto: {presupuesto_txt}\n"
-                f"{etiqueta}: {_meta_num(resultados)} | "
-                f"Costo/resultado: {'$' + _meta_num(costo_resultado) if costo_resultado is not None else '-'}\n"
-                f"Impresiones: {_meta_num(insights.get('impressions'))} | "
-                f"Alcance: {_meta_num(insights.get('reach'))} | Clics: {_meta_num(clics)}\n"
-                f"CTR: {_meta_num(insights.get('ctr'), 2)}% | "
-                f"CPM: ${_meta_num(insights.get('cpm'))} | CPC: ${_meta_num(insights.get('cpc'))}"
-            )
-        mensajes = _meta_partir_mensajes(encabezado, bloques)
 
     if params.get("dry_run"):
         return {
             "ok": True,
             "dry_run": True,
-            "campanas": len(corriendo),
-            "mensajes": mensajes,
+            "conversaciones_ayer": conversaciones_ayer,
+            "gasto_ayer": gasto_ayer,
+            "gasto_mes": gasto_mes,
+            "mensajes": [mensaje],
         }
 
-    enviados = 0
-    for mensaje in mensajes:
-        envio = await _enviar_a_destino("grupo", destino_id, mensaje)
-        if not envio.get("ok"):
-            return {
-                "ok": False,
-                "error": envio.get("error"),
-                "enviados": enviados,
-                "campanas": len(corriendo),
-            }
-        enviados += 1
+    envio = await _enviar_a_destino("grupo", destino_id, mensaje)
+    if not envio.get("ok"):
+        return {"ok": False, "error": envio.get("error")}
     return {
         "ok": True,
         "account_id": account_id,
-        "campanas": len(corriendo),
-        "mensajes_enviados": enviados,
+        "conversaciones_ayer": conversaciones_ayer,
+        "gasto_ayer": gasto_ayer,
+        "gasto_mes": gasto_mes,
+        "mensajes_enviados": 1,
         "fecha": fecha,
-        "preview": mensajes[0][:300],
+        "preview": mensaje,
     }
 
 
