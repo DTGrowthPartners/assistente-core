@@ -199,6 +199,15 @@ class Settings(BaseSettings):
     feature_audio_transcripcion: bool = True
     feature_catalogo_html: bool = True
 
+    # ── Demo carnicería ─────────────────────────────────────────────────────
+    # Activa un modo alternativo SOLO para estos números. Útil para demos sin
+    # levantar otro bot/canal. Lista separada por comas.
+    carniceria_demo_numeros: str = ""
+    # URL CSV pública/publicada de Google Sheets. Ej:
+    # https://docs.google.com/spreadsheets/d/e/.../pub?gid=0&single=true&output=csv
+    carniceria_sheet_csv_url: str = ""
+    carniceria_sheet_cache_segundos: int = 180
+
     tz: str = "America/Bogota"
 
     @property

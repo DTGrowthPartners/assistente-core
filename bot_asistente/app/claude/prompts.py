@@ -23,6 +23,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from app.config import get_settings
+from app.demo_carniceria import PROMPT_CARNICERIA
 
 settings = get_settings()
 
@@ -153,6 +154,14 @@ def construir_system_prompt(persona_file: str | None = None) -> list[dict]:
 
     Empresa + servicios + playbook son compartidos (es el mismo negocio).
     """
+    if persona_file == "__carniceria_demo__":
+        return [
+            {
+                "type": "text",
+                "text": PROMPT_CARNICERIA,
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
     if persona_file:
         identidad_text = _bloque_identidad_archivo(persona_file)
     else:

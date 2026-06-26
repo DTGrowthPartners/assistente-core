@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.claude.client import conversar
 from app.claude.intent import clasificar
 from app.config import get_settings
+from app.demo_carniceria import es_numero_demo
 from app.db.models import Cita, Cliente, Conversacion, Prospecto
 from app.db.repos import guardar_conversacion, ultimos_mensajes
 from app.logging_setup import log
@@ -142,7 +143,14 @@ async def procesar_mensaje_inbound(
         "cliente_numero": cliente_numero,
         "intent": intent,
     }
-    extra_system = await _construir_contexto_prospecto(session, cliente_id, cliente_numero)
+    modo_carniceria = es_numero_demo(cliente_numero)
+    if modo_carniceria:
+        ctx["modo_carniceria"] = True
+        extra_system = _construir_contexto_carniceria(cliente_numero)
+        persona_file = "__carniceria_demo__"
+    else:
+        extra_system = await _construir_contexto_prospecto(session, cliente_id, cliente_numero)
+        persona_file = ident.persona_prompt_file
 
     respuesta = await conversar(
         historial=historial_claude,
@@ -151,7 +159,7 @@ async def procesar_mensaje_inbound(
         imagen_base64=imagen_b64,
         imagen_mime=imagen_mime,
         extra_system=extra_system,
-        persona_file=ident.persona_prompt_file,
+        persona_file=persona_file,
     )
 
     texto_final = (respuesta.texto or "").strip()
@@ -282,6 +290,24 @@ async def _transcribir_nota_voz(msg: MensajeWhapi) -> str:
         # Transcripción no configurada: el bot pide el mensaje por texto.
         return "[El prospecto envió una nota de voz, pero no puedo escucharla. Pídele amablemente que te escriba el mensaje.]"
     return ""
+
+
+def _construir_contexto_carniceria(cliente_numero: str) -> str:
+    from zoneinfo import ZoneInfo as _ZI
+
+    _DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+    _MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+    ahora = datetime.now(_ZI(settings.tz))
+    return "\n".join([
+        "## CONTEXTO DINÁMICO DEL DEMO CARNICERÍA",
+        f"- Número demo: {cliente_numero}",
+        f"- Hoy es {_DIAS[ahora.weekday()]} {ahora.day} de {_MESES[ahora.month-1]} de {ahora.year}.",
+        f"- Hora actual: {ahora.strftime('%H:%M')} ({settings.tz}).",
+        "- Estás haciendo una demo comercial. Mantén la conversación 100% en modo carnicería.",
+        "- Si el cliente pregunta precios, disponibilidad, ofertas o cortes, usa `consultar_menu_carniceria`.",
+        "- Si la hoja no está configurada todavía, explica que estás terminando de cargar el menú y pide el corte/cantidad para separarlo apenas esté.",
+    ])
 
 
 async def _construir_contexto_prospecto(

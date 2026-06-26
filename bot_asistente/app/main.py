@@ -28,6 +28,7 @@ from app.admin.stories import router as stories_router
 from app.admin.automatizaciones import router as automatizaciones_router
 from app.admin.views import ALL_VIEWS
 from app.config import get_settings
+from app.demo_carniceria import es_numero_demo
 from app.db.repos import (
     bot_pausado,
     bot_pausado_por_numero,
@@ -670,6 +671,7 @@ document.addEventListener("DOMContentLoaded", function() {
     )
     # Convertimos el HTML del sidebar en algo que body.insertBefore pueda usar
     sidebar_js_safe = sidebar.replace("\\", "\\\\").replace("`", "\\`")
+    icon_sprite_js_safe = ICON_SPRITE.replace("\\", "\\\\").replace("`", "\\`")
     inject_sidebar_js = f"""
 <script>
 document.addEventListener("DOMContentLoaded", function() {{
@@ -695,7 +697,7 @@ document.addEventListener("DOMContentLoaded", function() {{
   if (!document.getElementById("admin-icon-sprite")) {{
     var s = document.createElement("div");
     s.id = "admin-icon-sprite";
-    s.innerHTML = `{ICON_SPRITE.replace("`", "\\`")}`;
+    s.innerHTML = `{icon_sprite_js_safe}`;
     s.style.display = "none";
     document.body.appendChild(s);
   }}
@@ -1021,6 +1023,27 @@ async def webhook(
         cli_id_pre, etiqueta_pre, pausado_indiv_pre = await estado_chat_por_numero(
             session, msg.from_number,
         )
+
+        # Modo demo carnicería: algunos números internos se tratan como
+        # "clientes" para poder probar una vertical sin desplegar otro bot.
+        if es_numero_demo(msg.from_number):
+            cliente = await get_or_create_cliente(session, msg.from_number, nombre=msg.from_name)
+            if cliente.etiqueta is None:
+                cliente.etiqueta = "demo_carniceria"
+                cliente.etiqueta_actualizada_en = datetime.now(timezone.utc)
+                cliente.etiqueta_actualizada_por = "auto:demo_carniceria"
+            await guardar_conversacion(
+                session, cliente_id=cliente.id, direccion="inbound",
+                tipo=msg.tipo, contenido=msg.texto,
+                whapi_message_id=msg.id, media_url=msg.media_url,
+                metadata={"modo_demo": "carniceria"},
+            )
+            log.info("webhook.demo_carniceria_routed", from_=msg.from_number)
+            resultados.append({"id": msg.id, "status": "demo_carniceria_routed"})
+            _track_task(asyncio.create_task(
+                _procesar_async(cliente.id, msg.from_number, msg, _identidad_principal())
+            ))
+            continue
 
         # ¿Es un MIEMBRO del equipo DTGP escribiendo a su chat personal?
         # POLÍTICA: el bot SOLO atiende al equipo en el grupo EQUIPO DTGP.

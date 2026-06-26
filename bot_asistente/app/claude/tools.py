@@ -197,6 +197,27 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["tipo", "mensaje"],
         },
     },
+    {
+        "name": "consultar_menu_carniceria",
+        "description": (
+            "SOLO para el modo demo carnicería. Consulta el menú vivo de carnes, "
+            "precios, disponibilidad y ofertas desde Google Sheets. Úsalo antes "
+            "de responder cualquier precio o recomendación de cortes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "consulta": {
+                    "type": "string",
+                    "description": "Corte o necesidad del cliente: punta de anca, carne para asar, molida, sancocho, etc.",
+                },
+                "limite": {
+                    "type": "integer",
+                    "description": "Máximo de resultados a devolver. Default 6.",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -744,6 +765,18 @@ async def handler_aplicar_tag_seguimiento(args: dict, ctx: dict) -> dict:
     }
 
 
+async def handler_consultar_menu_carniceria(args: dict, ctx: dict) -> dict:
+    """Busca cortes/precios en el Google Sheets configurado para la demo."""
+    from app.demo_carniceria import buscar_menu, es_numero_demo
+
+    if not es_numero_demo(ctx.get("cliente_numero")):
+        return {"ok": False, "error": "tool disponible solo en modo demo carnicería"}
+    return await buscar_menu(
+        consulta=str(args.get("consulta") or ""),
+        limite=int(args.get("limite") or 6),
+    )
+
+
 HANDLERS: dict[str, Handler] = {
     "guardar_info_prospecto": handler_guardar_info_prospecto,
     "consultar_disponibilidad": handler_consultar_disponibilidad,
@@ -751,6 +784,7 @@ HANDLERS: dict[str, Handler] = {
     "recordar_sobre_prospecto": handler_recordar_sobre_prospecto,
     "aplicar_tag_seguimiento": handler_aplicar_tag_seguimiento,
     "escalar_a_equipo": handler_escalar_a_equipo,
+    "consultar_menu_carniceria": handler_consultar_menu_carniceria,
 }
 
 
