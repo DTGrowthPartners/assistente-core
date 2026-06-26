@@ -57,13 +57,29 @@ def _campo(row: dict[str, str], *nombres: str) -> str:
 
 
 def _item_desde_row(row: dict[str, str]) -> dict[str, str]:
+    precio_base = _campo(row, "precio", "valor", "precio por kg (ars)")
+    precio_oferta = _campo(row, "precio oferta", "precio oferta (ars)", "precio promocion", "precio promoción")
+    en_oferta = _campo(row, "en oferta", "oferta", "promo", "promocion", "promoción")
+    descuento = _campo(row, "% descuento", "descuento")
+    precio = precio_oferta or precio_base
+    oferta = _campo(row, "oferta", "promo", "promocion", "promoción")
+    if precio_oferta or _normalizar_texto(en_oferta) in {"si", "sí", "yes", "true", "1"}:
+        partes = []
+        if precio_oferta:
+            partes.append(f"precio oferta {precio_oferta}")
+        if precio_base and precio_base != precio_oferta:
+            partes.append(f"precio regular {precio_base}")
+        if descuento:
+            partes.append(f"descuento {descuento}")
+        oferta = ", ".join(partes) or en_oferta
+
     return {
         "corte": _campo(row, "corte", "producto", "nombre", "item"),
         "categoria": _campo(row, "categoria", "tipo"),
-        "precio": _campo(row, "precio", "valor"),
-        "unidad": _campo(row, "unidad", "presentacion", "medida"),
-        "disponible": _campo(row, "disponible", "stock", "estado"),
-        "oferta": _campo(row, "oferta", "promo", "promocion", "promoción"),
+        "precio": precio,
+        "unidad": _campo(row, "unidad", "presentacion", "medida") or ("kg" if precio_base or precio_oferta else ""),
+        "disponible": _campo(row, "disponible", "stock", "estado", "disponibilidad"),
+        "oferta": oferta,
         "descripcion": _campo(row, "descripcion", "descripción", "detalle", "notas"),
     }
 
