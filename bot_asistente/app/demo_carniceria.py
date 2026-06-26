@@ -56,19 +56,43 @@ def _campo(row: dict[str, str], *nombres: str) -> str:
     return ""
 
 
+def _moneda_row(row: dict[str, str]) -> str:
+    headers = " ".join(row.keys()).upper()
+    if "COP" in headers:
+        return "COP"
+    if "ARS" in headers:
+        return "ARS"
+    return ""
+
+
+def _con_moneda(valor: str, moneda: str) -> str:
+    valor = (valor or "").strip()
+    if not valor or not moneda or moneda.upper() in valor.upper():
+        return valor
+    return f"{valor} {moneda}"
+
+
 def _item_desde_row(row: dict[str, str]) -> dict[str, str]:
-    precio_base = _campo(row, "precio", "valor", "precio por kg (ars)")
-    precio_oferta = _campo(row, "precio oferta", "precio oferta (ars)", "precio promocion", "precio promoción")
+    moneda = _moneda_row(row)
+    precio_base = _campo(row, "precio", "valor", "precio por kg", "precio por kg (ars)", "precio por kg (cop)")
+    precio_oferta = _campo(
+        row,
+        "precio oferta",
+        "precio oferta (ars)",
+        "precio oferta (cop)",
+        "precio promocion",
+        "precio promoción",
+    )
     en_oferta = _campo(row, "en oferta", "oferta", "promo", "promocion", "promoción")
     descuento = _campo(row, "% descuento", "descuento")
-    precio = precio_oferta or precio_base
+    precio = _con_moneda(precio_oferta or precio_base, moneda)
     oferta = _campo(row, "oferta", "promo", "promocion", "promoción")
     if precio_oferta or _normalizar_texto(en_oferta) in {"si", "sí", "yes", "true", "1"}:
         partes = []
         if precio_oferta:
-            partes.append(f"precio oferta {precio_oferta}")
+            partes.append(f"precio oferta {_con_moneda(precio_oferta, moneda)}")
         if precio_base and precio_base != precio_oferta:
-            partes.append(f"precio regular {precio_base}")
+            partes.append(f"precio regular {_con_moneda(precio_base, moneda)}")
         if descuento:
             partes.append(f"descuento {descuento}")
         oferta = ", ".join(partes) or en_oferta
